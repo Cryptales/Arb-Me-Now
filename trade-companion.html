@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PulseChain Trade Execution Companion</title>
+<style>
+/* ── THEME ─────────────────────────────────────────────── */
+:root[data-theme="dark"]{
+  --bg:#0b0e17;--surface:#131825;--surface2:#0f1420;--border:#1e2840;--border2:#1a2035;
+  --text:#e2e8f0;--text2:#a0aec0;--muted:#5a6785;--muted2:#718096;
+  --green:#48bb78;--green-bg:#0d2b1e;--green-border:#276749;--green-text:#68d391;
+  --amber:#f6ad55;--amber-bg:#3d1f00;--amber-border:#c05621;
+  --red:#fc8181;--red-bg:#2d0f0f;--red-border:#822727;
+  --blue:#63b3ed;--purple:#b794f4;--shadow:rgba(0,0,0,.5);
+}
+:root[data-theme="light"]{
+  --bg:#f7f9fc;--surface:#ffffff;--surface2:#eef2f7;--border:#d1d9e6;--border2:#e2e8f0;
+  --text:#1a202c;--text2:#2d3748;--muted:#718096;--muted2:#4a5568;
+  --green:#276749;--green-bg:#c6f6d5;--green-border:#68d391;--green-text:#22543d;
+  --amber:#c05621;--amber-bg:#feebc8;--amber-border:#f6ad55;
+  --red:#c53030;--red-bg:#fff5f5;--red-border:#fc8181;
+  --blue:#2b6cb0;--purple:#553c9a;--shadow:rgba(0,0,0,.1);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Segoe UI',Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:16px;transition:background .25s,color .25s;}
+
+/* ── LAYOUT ─────────────────────────────────────────────── */
+.header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;gap:10px;flex-wrap:wrap;}
+h1{font-size:18px;color:var(--text);letter-spacing:.3px;}
+.subtitle{font-size:11px;color:var(--muted);margin-top:2px;}
+.header-btns{display:flex;gap:6px;flex-shrink:0;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+.grid-full{grid-column:1/-1;}
+@media(max-width:700px){.grid{grid-template-columns:1fr;}}
+
+/* ── PANELS ─────────────────────────────────────────────── */
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;}
+.panel h3{font-size:13px;font-weight:600;color:var(--text2);margin-bottom:10px;display:flex;align-items:center;gap:6px;}
+.panel-accent{border-color:var(--green-border);background:var(--green-bg);}
+
+/* ── STATUS ─────────────────────────────────────────────── */
+.status-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);margin-bottom:12px;flex-wrap:wrap;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:blink 2s infinite;flex-shrink:0;}
+.dot.loading{background:var(--amber);}.dot.error{background:var(--red);animation:none;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ── BUTTONS ─────────────────────────────────────────────── */
+button{padding:6px 13px;font-size:12px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text2);cursor:pointer;transition:all .15s;white-space:nowrap;}
+button:hover{background:var(--surface2);}
+button.btn-green{background:var(--green-bg);border-color:var(--green-border);color:var(--green);font-weight:600;}
+button.btn-green:hover{opacity:.85;}
+button.btn-amber{background:var(--amber-bg);border-color:var(--amber-border);color:var(--amber);font-weight:600;}
+button.btn-red{background:var(--red-bg);border-color:var(--red-border);color:var(--red);}
+button:disabled{opacity:.4;cursor:not-allowed;}
+
+/* ── INPUTS ─────────────────────────────────────────────── */
+input[type=text],input[type=number],select{padding:6px 11px;font-size:12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);outline:none;width:100%;transition:border .2s;}
+input:focus,select:focus{border-color:var(--green);}
+.input-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+.input-row label{font-size:12px;color:var(--muted2);white-space:nowrap;min-width:90px;}
+.input-row input,.input-row select{flex:1;}
+.input-hint{font-size:11px;color:var(--muted);margin-top:2px;}
+
+/* ── METRICS ─────────────────────────────────────────────── */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px;}
+.metric{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:11px 13px;}
+.metric-label{font-size:10px;color:var(--muted);margin-bottom:2px;text-transform:uppercase;letter-spacing:.5px;}
+.metric-value{font-size:18px;font-weight:700;}
+.g{color:var(--green);}.a{color:var(--amber);}.r{color:var(--red);}.b{color:var(--blue);}.p{color:var(--purple);}
+
+/* ── OPPORTUNITY CARDS ──────────────────────────────────── */
+.opp-list{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto;}
+.opp-card{background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px;cursor:pointer;transition:border-color .2s,transform .15s;}
+.opp-card:hover{border-color:var(--green-border);transform:translateY(-1px);}
+.opp-card.selected{border-color:var(--green-border);background:var(--green-bg);}
+.opp-card-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.opp-pair{font-size:13px;font-weight:700;color:var(--text);}
+.opp-spread{font-size:14px;font-weight:800;color:var(--green);}
+.opp-route{font-size:11px;color:var(--muted2);margin-bottom:4px;}
+.opp-meta{display:flex;gap:12px;font-size:11px;color:var(--muted);}
+.badge{display:inline-block;padding:2px 7px;border-radius:100px;font-size:10px;font-weight:700;}
+.badge-green{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);}
+.badge-amber{background:var(--amber-bg);color:var(--amber);}
+.badge-red{background:var(--red-bg);color:var(--red);}
+.opp-type{font-size:10px;padding:2px 7px;border-radius:100px;background:var(--border2);color:var(--muted2);}
+
+/* ── EXECUTION PANEL ────────────────────────────────────── */
+.exec-empty{text-align:center;color:var(--muted);padding:32px 16px;font-size:13px;}
+.exec-step{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--border2);}
+.exec-step:last-child{border-bottom:none;}
+.step-num{width:28px;height:28px;border-radius:50%;background:var(--green-bg);color:var(--green);border:2px solid var(--green-border);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;margin-top:1px;}
+.step-body{flex:1;}
+.step-title{font-size:12px;font-weight:700;color:var(--text);margin-bottom:4px;}
+.step-detail{font-size:11px;color:var(--muted2);line-height:1.5;margin-bottom:6px;}
+.step-amount{font-size:14px;font-weight:700;color:var(--amber);margin-bottom:6px;}
+.step-link{display:inline-block;padding:5px 12px;background:var(--blue);color:#fff;border-radius:7px;font-size:11px;font-weight:600;text-decoration:none;transition:opacity .15s;}
+.step-link:hover{opacity:.85;}
+.step-link.pulsex{background:#7c3aed;}
+.step-link.ninemm{background:#0891b2;}
+.step-link.nineinch{background:#dc2626;}
+.step-link.eazy{background:#047857;}
+.step-link.velo{background:#c2410c;}
+
+/* ── SLIPPAGE CALC ──────────────────────────────────────── */
+.calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
+.calc-item{background:var(--surface2);border-radius:8px;padding:9px 11px;}
+.calc-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:2px;}
+.calc-val{font-size:15px;font-weight:700;}
+.calc-sub{font-size:10px;color:var(--muted);margin-top:1px;}
+
+/* ── TIMER ──────────────────────────────────────────────── */
+.timer-ring{display:flex;flex-direction:column;align-items:center;justify-content:center;margin:10px auto;}
+.timer-svg{transform:rotate(-90deg);}
+.timer-text{font-size:26px;font-weight:800;color:var(--text);text-align:center;margin-top:4px;}
+.timer-label{font-size:11px;color:var(--muted);text-align:center;}
+.timer-warn{color:var(--amber);}.timer-critical{color:var(--red);}
+.timer-controls{display:flex;gap:8px;justify-content:center;margin-top:10px;}
+
+/* ── JOURNAL ────────────────────────────────────────────── */
+.journal-progress{margin-bottom:12px;}
+.progress-track{height:10px;background:var(--border);border-radius:10px;overflow:hidden;margin:6px 0;}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--green),#38a169);border-radius:10px;transition:width .6s ease;}
+.wins-label{font-size:12px;color:var(--muted2);}
+.wins-count{font-size:22px;font-weight:800;color:var(--green);}
+.journal-form{background:var(--surface2);border-radius:10px;padding:12px;margin-bottom:12px;border:1px solid var(--border);}
+.journal-form h4{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px;}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;}
+.form-row.three{grid-template-columns:1fr 1fr 1fr;}
+.form-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
+.journal-entries{max-height:320px;overflow-y:auto;}
+.journal-row{display:grid;grid-template-columns:auto 1fr auto auto auto auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--border2);font-size:12px;}
+.journal-row:last-child{border-bottom:none;}
+.j-num{width:24px;height:24px;border-radius:50%;background:var(--green-bg);color:var(--green);border:2px solid var(--green-border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0;}
+.j-pair{font-weight:600;color:var(--text);}
+.j-pnl-pos{color:var(--green);font-weight:700;}
+.j-pnl-neg{color:var(--red);font-weight:700;}
+.j-status-win{color:var(--green);font-size:11px;font-weight:700;}
+.j-status-loss{color:var(--red);font-size:11px;}
+.j-status-pending{color:var(--amber);font-size:11px;}
+.j-del{color:var(--muted);cursor:pointer;font-size:14px;padding:2px 5px;border:none;background:none;}
+.j-del:hover{color:var(--red);}
+
+/* ── CHECKLIST ──────────────────────────────────────────── */
+.checklist{list-style:none;}
+.checklist li{display:flex;gap:8px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--border2);font-size:12px;color:var(--text2);}
+.checklist li:last-child{border-bottom:none;}
+.check-icon{flex-shrink:0;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;margin-top:1px;}
+.check-icon.done{background:var(--green-bg);color:var(--green);border:1px solid var(--green-border);}
+.check-icon.warn{background:var(--amber-bg);color:var(--amber);}
+.check-icon.bad{background:var(--red-bg);color:var(--red);}
+
+/* ── TOAST ──────────────────────────────────────────────── */
+.toast{position:fixed;top:16px;right:16px;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:600;z-index:9999;max-width:300px;display:none;box-shadow:0 4px 20px var(--shadow);}
+.toast.show{display:block;}
+.toast.ok{background:var(--green-bg);border:1px solid var(--green-border);color:var(--green);}
+.toast.warn{background:var(--amber-bg);border:1px solid var(--amber-border);color:var(--amber);}
+
+/* ── WIN MODAL ──────────────────────────────────────────── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;display:none;}
+.modal-overlay.show{display:flex;}
+.modal{background:var(--surface);border:2px solid var(--green-border);border-radius:16px;padding:32px;max-width:400px;width:90%;text-align:center;}
+.modal-emoji{font-size:56px;margin-bottom:12px;}
+.modal h2{font-size:22px;font-weight:800;color:var(--green);margin-bottom:8px;}
+.modal p{font-size:14px;color:var(--text2);line-height:1.6;margin-bottom:20px;}
+.confetti{font-size:28px;letter-spacing:8px;}
+</style>
+</head>
+<body>
+<div class="toast" id="toast"></div>
+<div class="modal-overlay" id="win-modal">
+  <div class="modal">
+    <div class="modal-emoji">🏆</div>
+    <h2 id="modal-title">Profitable Trade!</h2>
+    <p id="modal-body">You captured an arb opportunity. Keep going!</p>
+    <div class="confetti">🎉🚀💚⚡🎯</div>
+    <br>
+    <button class="btn-green" onclick="closeModal()" style="margin-top:16px;padding:10px 28px;font-size:14px;">Keep hunting!</button>
+  </div>
+</div>
+
+<!-- HEADER -->
+<div class="header">
+  <div>
+    <h1>⚡ Trade Execution Companion</h1>
+    <div class="subtitle">Step-by-step arb execution · Trade journal · 5-win tracker · $100–$500 budget</div>
+  </div>
+  <div class="header-btns">
+    <button onclick="toggleTheme()" id="theme-btn">☀️ Light</button>
+    <button onclick="runScan()" class="btn-green">🔄 Scan Now</button>
+    <a href="dashboard.html" style="text-decoration:none;">
+      <button>📊 Dashboard</button>
+    </a>
+  </div>
+</div>
+
+<!-- STATUS -->
+<div class="status-bar">
+  <span class="dot loading" id="dot"></span>
+  <span id="status-text">Scanning DEXes for opportunities…</span>
+  <span style="margin-left:auto;font-size:11px;" id="last-scan"></span>
+</div>
+
+<!-- METRICS -->
+<div class="metrics">
+  <div class="metric"><div class="metric-label">Live opps</div><div class="metric-value g" id="m-opps">—</div></div>
+  <div class="metric"><div class="metric-label">Best spread</div><div class="metric-value a" id="m-best">—</div></div>
+  <div class="metric"><div class="metric-label">Wins logged</div><div class="metric-value g" id="m-wins">0 / 5</div></div>
+  <div class="metric"><div class="metric-label">Total P&amp;L</div><div class="metric-value g" id="m-pnl">$0.00</div></div>
+  <div class="metric"><div class="metric-label">Trades logged</div><div class="metric-value b" id="m-trades">0</div></div>
+  <div class="metric"><div class="metric-label">Auto-refresh</div><div class="metric-value p" id="m-refresh">Off</div></div>
+</div>
+
+<!-- MAIN GRID -->
+<div class="grid">
+
+  <!-- LEFT: Opportunity Selector -->
+  <div>
+    <div class="panel" style="margin-bottom:14px;">
+      <h3>🎯 Live Opportunities
+        <span style="margin-left:auto;display:flex;gap:6px;">
+          <button onclick="toggleAutoRefresh()" id="auto-btn" style="font-size:11px;padding:3px 9px;">▶ Auto</button>
+          <select id="filter-type" onchange="renderOpps()" style="font-size:11px;padding:3px 8px;width:auto;">
+            <option value="all">All types</option>
+            <option value="cross">Cross-DEX</option>
+            <option value="tri">Tri-arb</option>
+          </select>
+        </span>
+      </h3>
+      <div class="opp-list" id="opp-list">
+        <div style="text-align:center;color:var(--muted);padding:24px;font-size:12px;">Scanning…</div>
+      </div>
+    </div>
+
+    <!-- Pre-trade checklist -->
+    <div class="panel">
+      <h3>✅ Pre-Trade Checklist</h3>
+      <ul class="checklist" id="checklist">
+        <li><div class="check-icon warn">?</div><span>Wallet funded with PLS for gas (&lt;$0.01 per swap)</span></li>
+        <li><div class="check-icon warn">?</div><span>Source token balance confirmed in wallet</span></li>
+        <li><div class="check-icon warn">?</div><span>Both DEX UIs open and wallet connected</span></li>
+        <li><div class="check-icon warn">?</div><span>Slippage tolerance set to 0.5–1.0% on both DEXes</span></li>
+        <li><div class="check-icon warn">?</div><span>Opportunity still shows above 0.6% (covers fees)</span></li>
+        <li><div class="check-icon warn">?</div><span>Price impact below 1% for your trade size</span></li>
+      </ul>
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+        <button onclick="checkAll(true)" class="btn-green" style="font-size:11px;">✓ All clear</button>
+        <button onclick="checkAll(false)" style="font-size:11px;">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: Execution Panel -->
+  <div>
+    <div class="panel" style="margin-bottom:14px;">
+      <h3>⚡ Execution Steps
+        <span id="exec-badge" style="margin-left:auto;"></span>
+      </h3>
+
+      <!-- Budget input -->
+      <div class="input-row" style="margin-bottom:12px;">
+        <label>Trade budget</label>
+        <div style="position:relative;flex:1;">
+          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:12px;">$</span>
+          <input type="number" id="budget" value="200" min="50" max="500" step="10"
+            style="padding-left:24px;" oninput="updateExec()">
+        </div>
+        <select id="budget-quick" onchange="quickBudget()" style="width:auto;font-size:11px;">
+          <option value="">Quick</option>
+          <option value="100">$100</option>
+          <option value="200">$200</option>
+          <option value="300">$300</option>
+          <option value="500">$500</option>
+        </select>
+      </div>
+
+      <div id="exec-panel">
+        <div class="exec-empty">👆 Select an opportunity from the left panel to see execution steps</div>
+      </div>
+    </div>
+
+    <!-- Slippage & Impact Calculator -->
+    <div class="panel" style="margin-bottom:14px;">
+      <h3>📐 Slippage & Impact Calculator</h3>
+      <div class="calc-grid" id="calc-grid">
+        <div class="calc-item"><div class="calc-label">Trade size</div><div class="calc-val b" id="c-size">—</div><div class="calc-sub">your budget</div></div>
+        <div class="calc-item"><div class="calc-label">Pool depth</div><div class="calc-val" id="c-depth">—</div><div class="calc-sub">total liquidity</div></div>
+        <div class="calc-item"><div class="calc-label">Price impact</div><div class="calc-val" id="c-impact">—</div><div class="calc-sub">est. slippage</div></div>
+        <div class="calc-item"><div class="calc-label">Net profit (est.)</div><div class="calc-val g" id="c-profit">—</div><div class="calc-sub">after fees+impact</div></div>
+        <div class="calc-item"><div class="calc-label">Gross spread</div><div class="calc-val a" id="c-spread">—</div><div class="calc-sub">before costs</div></div>
+        <div class="calc-item"><div class="calc-label">Execute within</div><div class="calc-val p" id="c-time">—</div><div class="calc-sub">before stale</div></div>
+      </div>
+    </div>
+
+    <!-- Execution timer -->
+    <div class="panel" id="timer-panel" style="display:none;">
+      <h3>⏱ Execution Timer</h3>
+      <div class="timer-ring">
+        <svg class="timer-svg" width="90" height="90" viewBox="0 0 90 90">
+          <circle cx="45" cy="45" r="38" fill="none" stroke="var(--border)" stroke-width="6"/>
+          <circle id="timer-arc" cx="45" cy="45" r="38" fill="none" stroke="var(--green)"
+            stroke-width="6" stroke-linecap="round"
+            stroke-dasharray="238.76" stroke-dashoffset="0"/>
+        </svg>
+        <div class="timer-text" id="timer-text">60</div>
+        <div class="timer-label" id="timer-label">seconds to execute</div>
+      </div>
+      <div class="timer-controls">
+        <button class="btn-green" onclick="startTimer()">▶ Start</button>
+        <button onclick="resetTimer()">↺ Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRADE JOURNAL (full width) -->
+  <div class="grid-full">
+    <div class="panel">
+      <h3>📓 Trade Journal
+        <span style="margin-left:auto;display:flex;gap:6px;">
+          <button onclick="exportJournal()" style="font-size:11px;">⬇️ Export CSV</button>
+          <button onclick="clearJournal()" class="btn-red" style="font-size:11px;">🗑 Clear</button>
+        </span>
+      </h3>
+
+      <!-- 5-Win Progress -->
+      <div class="journal-progress">
+        <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:6px;">
+          <span class="wins-count" id="wins-display">0</span>
+          <span class="wins-label">profitable trades logged  ·  Goal: 5 wins to unlock distribution package</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" id="wins-bar" style="width:0%"></div></div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:3px;">
+          <span>0</span><span>1</span><span>2</span><span>3</span><span>4</span><span>🏆 5</span>
+        </div>
+      </div>
+
+      <!-- Log a trade form -->
+      <div class="journal-form">
+        <h4>+ Log a completed trade</h4>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Token pair</div>
+            <input type="text" id="j-pair" placeholder="e.g. WPLS/USDC">
+          </div>
+          <div>
+            <div class="form-label">Type</div>
+            <select id="j-type">
+              <option value="cross">Cross-DEX</option>
+              <option value="tri">Tri-arb</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row three">
+          <div>
+            <div class="form-label">Amount in ($)</div>
+            <input type="number" id="j-in" placeholder="200">
+          </div>
+          <div>
+            <div class="form-label">Amount out ($)</div>
+            <input type="number" id="j-out" placeholder="201.80">
+          </div>
+          <div>
+            <div class="form-label">Spread captured (%)</div>
+            <input type="number" id="j-spread" placeholder="0.90" step="0.01">
+          </div>
+        </div>
+        <div class="form-row">
+          <div>
+            <div class="form-label">Buy DEX</div>
+            <input type="text" id="j-buy" placeholder="PulseX V1">
+          </div>
+          <div>
+            <div class="form-label">Sell DEX</div>
+            <input type="text" id="j-sell" placeholder="9inch V2">
+          </div>
+        </div>
+        <div class="input-row" style="margin-bottom:0;">
+          <label style="min-width:60px;">Notes</label>
+          <input type="text" id="j-notes" placeholder="Optional notes about this trade">
+          <button class="btn-green" onclick="logTrade()" style="flex-shrink:0;">Log trade</button>
+        </div>
+      </div>
+
+      <!-- Journal entries -->
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;" id="journal-summary"></div>
+      <div class="journal-entries" id="journal-entries">
+        <div style="text-align:center;color:var(--muted);padding:20px;font-size:12px;">No trades logged yet. Execute your first arb and log it here!</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end grid -->
+
+<!-- Tips panel -->
+<div class="panel" style="margin-top:14px;">
+  <h3>💡 Execution Tips for Manual Arb</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;">
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;">
+      <div style="font-size:11px;font-weight:700;color:var(--amber);margin-bottom:4px;">⏱ Speed matters</div>
+      <div style="font-size:11px;color:var(--muted2);line-height:1.5;">At $100–500 scale, you have a wider window than bots since your price impact is tiny. Aim to execute both legs within 60 seconds of spotting the opp.</div>
+    </div>
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;">
+      <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:4px;">✅ Set slippage correctly</div>
+      <div style="font-size:11px;color:var(--muted2);line-height:1.5;">Use 0.5% slippage on both DEXes. Too low and your tx will revert. Too high and you give back profit. PulseX: Settings → Slippage Tolerance.</div>
+    </div>
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;">
+      <div style="font-size:11px;font-weight:700;color:var(--blue);margin-bottom:4px;">📊 Target 0.6%+ spreads</div>
+      <div style="font-size:11px;color:var(--muted2);line-height:1.5;">Two swaps cost ~0.58% in fees. You need a gross spread above that to profit. Spreads above 1% are much safer after slippage. Ignore "Slim" signals.</div>
+    </div>
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;">
+      <div style="font-size:11px;font-weight:700;color:var(--purple);margin-bottom:4px;">🔄 Buy leg first</div>
+      <div style="font-size:11px;color:var(--muted2);line-height:1.5;">Always complete the buy leg first (cheaper DEX). Then immediately execute the sell leg. Never wait between legs — prices move.</div>
+    </div>
+  </div>
+</div>
+
+<p style="font-size:11px;color:var(--muted);margin-top:12px;text-align:center;line-height:1.7;">
+  This tool shows opportunities and execution steps. It does not connect to your wallet or execute trades. Always verify prices on-chain before trading. Not financial advice.
+</p>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════
+const GRAPH_V1='https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsex';
+const GRAPH_V2='https://graph.pulsechain.com/subgraphs/name/pulsechain/pulsexv2';
+const RPC='https://rpc.pulsechain.com';
+
+// For DEX swap URLs, PulseX/9inch/EazySwap expect "ETH" for native PLS,
+// not the WPLS contract address. Map it back here.
+const WPLS_ADDR = '0xA1077a294dDE1B09bB078844df40758a5D0f9a27';
+function swapAddr(addr){ return addr === WPLS_ADDR ? 'ETH' : addr; }
+
+// DEX deep-link URL builders
+const PULSEX_BASE = 'https://pulsex.mypinata.cloud/ipfs/bafybeidea3ibq4lu5t6vk6ihp4iuznjb3ltsdm5y2shv4atxgyd3d33aim';
+const DEX_LINKS = {
+  'PulseX V1':   (t0,t1)=>`${PULSEX_BASE}/#/?inputCurrency=${t0}&outputCurrency=${t1}`,
+  'PulseX V2':   (t0,t1)=>`${PULSEX_BASE}/#/?inputCurrency=${t0}&outputCurrency=${t1}`,
+  '9inch V2':    (t0,t1)=>`https://9inch.io/#/swap?inputCurrency=${t0}&outputCurrency=${t1}`,
+  '9mm V2':      (t0,t1)=>`https://9mm.pro/swap?inputCurrency=${t0}&outputCurrency=${t1}`,
+  'EazySwap':    (t0,t1)=>`https://eazyswap.io/#/swap?inputCurrency=${t0}&outputCurrency=${t1}`,
+  'Velocimeter': (t0,t1)=>`https://velocimeter.xyz/swap?from=${t0}&to=${t1}`,
+};
+const DEX_CLASS = {
+  'PulseX V1':'pulsex','PulseX V2':'pulsex',
+  '9inch V2':'nineinch','9mm V2':'ninemm',
+  'EazySwap':'eazy','Velocimeter':'velo'
+};
+const TOKEN_ADDRS = {
+  'WPLS':'0xA1077a294dDE1B09bB078844df40758a5D0f9a27',
+  'PLSX':'0x95B303987A60C71504D99Aa1b13B4DA07b0790ab',
+  'HEX':'0x2b591e99afE9f32eAA6214f7B7629768c40Eeb39',
+  'INC':'0x2fa878Ab3F87CC1C9737Fc071108F904c0B0C95d',
+  'USDC':'0x15D38573d2feeb82e7ad5187aB8c1D52810B1f07',
+  'USDT':'0x0Cb6F5a34ad42ec934882A05265A7d5F59b51A2f',
+  'DAI':'0xefD766cCb38EaF1dfd701853BFCe31359239F305',
+  'WETH':'0x02DcdD04e3F455D838cd1249292c58f3B79e3C3C',
+  'WBTC':'0xb17D901469B9208B17d916112988A3FeD19b5cA1',
+  '9INCH':'0x3ca80d83277e721171284667829c686527b8b3c5',
+  '9MM':'0x6b9bb36519538e0C073894E964E90172E1c0B41F',
+  'EAZY':'0x3819f64f282bf135d62168c1e513280daf905e06',
+};
+const STABLE_SYMS=new Set(['USDC','USDT','DAI']);
+const RPC_DEXES=[
+  {name:'9inch V2',factory:'0x1164dab36cd7036668ddcbb430f7e0b15416ef0b'},
+  {name:'9mm V2',factory:'0x3a0fa7884dd93f3cd234bbe2a0958ef04b05e13b'},
+  {name:'EazySwap',factory:'0xbee82c502ec48a962510aa4505595259c3ba631f'},
+  {name:'Velocimeter',factory:'0x6389e934d35fc9e066fab549c8dbc9fddac10e0d'},
+];
+const TOKEN_BY_ADDR={};
+Object.entries(TOKEN_ADDRS).forEach(([s,a])=>TOKEN_BY_ADDR[a.toLowerCase()]=s);
+const SEL={allPairsLength:'0x574f2ba3',allPairs:'0x1e3dd18b',getReserves:'0x0902f1ac',
+           token0:'0x0dfe1681',token1:'0xd21220a7',decimals:'0x313ce567',symbol:'0x95d89b41'};
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+let allPairs=[],usdPrices={},crossOpps=[],triCycles=[],allOpps=[];
+let selectedOpp=null,scanning=false,autoRefresh=false,autoInterval=null,rpcId=1;
+let timerInterval=null,timerSeconds=60,timerRunning=false;
+let journal=JSON.parse(localStorage.getItem('arb-journal')||'[]');
+
+// ═══════════════════════════════════════════════════════════
+// RPC
+// ═══════════════════════════════════════════════════════════
+async function rpcCall(m,p){
+  const r=await fetch(RPC,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({jsonrpc:'2.0',id:rpcId++,method:m,params:p})});
+  const j=await r.json();if(j.error)throw new Error(j.error.message);return j.result;
+}
+async function eth_call(to,data){return rpcCall('eth_call',[{to,data},'latest']);}
+const addr_=h=>'0x'+h.slice(-40);
+const uint_=h=>parseInt(h,16)||0;
+async function getTokenInfo(a){
+  try{
+    const sr=await eth_call(a,SEL.symbol);
+    const len=parseInt(sr.slice(66,130),16);
+    let s='';for(let i=0;i<Math.min(len*2,64);i+=2)s+=String.fromCharCode(parseInt(sr.slice(130+i,132+i),16));
+    s=s.replace(/[^\x20-\x7E]/g,'').trim();
+    const dr=await eth_call(a,SEL.decimals);
+    return{sym:s||a.slice(0,8),dec:parseInt(dr,16)||18};
+  }catch{return{sym:a.slice(0,8),dec:18};}
+}
+async function fetchRpcPairs(dex,knownPrices){
+  const pairs=[];
+  try{
+    const total=uint_(await eth_call(dex.factory,SEL.allPairsLength));
+    if(!total)return pairs;
+    const step=Math.max(1,Math.floor(total/200));
+    const indices=[];
+    for(let i=0;i<total;i+=step)indices.push(i);
+    for(let i=Math.max(0,total-20);i<total;i++)if(!indices.includes(i))indices.push(i);
+    const pairAddrs=await Promise.all(indices.slice(0,200).map(async i=>{
+      const r=await eth_call(dex.factory,SEL.allPairs+i.toString(16).padStart(64,'0'));
+      return addr_(r);
+    }));
+    const B=12;
+    for(let b=0;b<pairAddrs.length;b+=B){
+      await Promise.all(pairAddrs.slice(b,b+B).map(async pa=>{
+        try{
+          const[rr,t0r,t1r]=await Promise.all([eth_call(pa,SEL.getReserves),eth_call(pa,SEL.token0),eth_call(pa,SEL.token1)]);
+          const t0a=addr_(t0r).toLowerCase(),t1a=addr_(t1r).toLowerCase();
+          const r0raw=BigInt('0x'+rr.slice(2,66)),r1raw=BigInt('0x'+rr.slice(66,130));
+          if(!r0raw||!r1raw)return;
+          let s0=TOKEN_BY_ADDR[t0a],s1=TOKEN_BY_ADDR[t1a],d0=18,d1=18;
+          if(!s0){const i=await getTokenInfo(t0a);s0=i.sym;d0=i.dec;}
+          if(!s1){const i=await getTokenInfo(t1a);s1=i.sym;d1=i.dec;}
+          const r0=Number(r0raw)/10**d0,r1=Number(r1raw)/10**d1;
+          if(r0<0.001||r1<0.001)return;
+          let resUSD=0;
+          if(knownPrices[s0])resUSD=r0*knownPrices[s0]*2;
+          else if(knownPrices[s1])resUSD=r1*knownPrices[s1]*2;
+          if(resUSD<500)return;
+          pairs.push({id:pa,s0,s1,a0:t0a,a1:t1a,r0,r1,resUSD,
+            rateAtoB:r0>0?r1/r0:0,rateBtoA:r1>0?r0/r1:0,dex:dex.name});
+        }catch{}
+      }));
+    }
+  }catch(e){console.warn(dex.name,e.message);}
+  return pairs;
+}
+async function fetchSubgraphPairs(url,label){
+  const q=`{pairs(first:200,orderBy:reserveUSD,orderDirection:desc,where:{reserveUSD_gt:"1000"}){
+    id token0{id symbol}token1{id symbol}reserve0 reserve1 reserveUSD token0Price token1Price}}`;
+  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:q})});
+  const j=await r.json();
+  return(j.data?.pairs||[]).map(p=>({
+    id:p.id,s0:p.token0.symbol,s1:p.token1.symbol,
+    a0:p.token0.id.toLowerCase(),a1:p.token1.id.toLowerCase(),
+    r0:parseFloat(p.reserve0),r1:parseFloat(p.reserve1),resUSD:parseFloat(p.reserveUSD),
+    rateAtoB:parseFloat(p.token0Price)||0,rateBtoA:parseFloat(p.token1Price)||0,dex:label
+  }));
+}
+function deriveUSDPrices(pairs){
+  const p={};STABLE_SYMS.forEach(s=>{p[s]=1;});
+  for(let pass=0;pass<7;pass++)for(const pair of pairs){
+    if(!pair.r0||!pair.r1)continue;
+    const p0k=p[pair.s0]!==undefined,p1k=p[pair.s1]!==undefined;
+    if(p0k&&!p1k)p[pair.s1]=p[pair.s0]*(pair.r0/pair.r1);
+    else if(p1k&&!p0k)p[pair.s0]=p[pair.s1]*(pair.r1/pair.r0);
+    else if(p0k&&p1k){p[pair.s1]=(p[pair.s1]+p[pair.s0]*(pair.r0/pair.r1))/2;p[pair.s0]=(p[pair.s0]+p[pair.s1]*(pair.r1/pair.r0))/2;}
+  }
+  return p;
+}
+function findCrossArb(pairs){
+  const map={};
+  for(const p of pairs){const k=[p.s0,p.s1].sort().join('/');(map[k]=map[k]||[]).push(p);}
+  const opps=[];
+  for(const[key,group]of Object.entries(map)){
+    if(group.length<2)continue;
+    for(let i=0;i<group.length;i++)for(let j=i+1;j<group.length;j++){
+      const a=group[i],b=group[j];
+      if(a.dex===b.dex||!a.r0||!a.r1||!b.r0||!b.r1)continue;
+      const[t0]=key.split('/');
+      const aP=a.s0===t0?a.r1/a.r0:a.r0/a.r1,bP=b.s0===t0?b.r1/b.r0:b.r0/b.r1;
+      const hi=Math.max(aP,bP),lo=Math.min(aP,bP);
+      const[buyDex,sellDex]=aP<bP?[a.dex,b.dex]:[b.dex,a.dex];
+      const[buyPair,sellPair]=aP<bP?[a,b]:[b,a];
+      const spread=((hi-lo)/lo)*100;
+      if(spread>=0.1)opps.push({
+        type:'cross',token:key,buyDex,sellDex,buyRate:lo,sellRate:hi,spread,
+        buyPair,sellPair,
+        token0:key.split('/')[0],token1:key.split('/')[1]
+      });
+    }
+  }
+  return opps.sort((a,b)=>b.spread-a.spread);
+}
+function findTriArb(pairs){
+  const byDex={};
+  for(const p of pairs){
+    if(!byDex[p.dex])byDex[p.dex]={};
+    const g=byDex[p.dex];
+    if(!g[p.s0])g[p.s0]=[];if(!g[p.s1])g[p.s1]=[];
+    if(p.r0>0&&p.r1>0){
+      g[p.s0].push({to:p.s1,rate:(p.r1/p.r0)*0.997,pair:p});
+      g[p.s1].push({to:p.s0,rate:(p.r0/p.r1)*0.997,pair:p});
+    }
+  }
+  const cycles=[];
+  for(const[dex,graph]of Object.entries(byDex))
+    for(const a of Object.keys(graph))
+      for(const eAB of(graph[a]||[])){const b=eAB.to,r1=eAB.rate;
+        for(const eBC of(graph[b]||[])){const c=eBC.to;if(c===a)continue;const r2=eBC.rate;
+          for(const eCA of(graph[c]||[])){if(eCA.to!==a)continue;
+            const gross=(r1*r2*eCA.rate-1)*100;
+            if(gross>0.1)cycles.push({type:'tri',a,b,c,dex,r1,r2,r3:eCA.rate,gross,
+              token:`${a}→${b}→${c}`,spread:gross,
+              pairAB:eAB.pair,pairBC:eBC.pair,pairCA:eCA.pair});
+          }
+        }
+      }
+  return cycles.sort((a,b)=>b.gross-a.gross).slice(0,30);
+}
+
+// ═══════════════════════════════════════════════════════════
+// MAIN SCAN
+// ═══════════════════════════════════════════════════════════
+async function runScan(){
+  if(scanning)return;scanning=true;
+  const dot=document.getElementById('dot');dot.className='dot loading';
+  document.getElementById('status-text').textContent='Scanning all DEXes…';
+  try{
+    const[v1P,v2P]=await Promise.all([
+      fetchSubgraphPairs(GRAPH_V1,'PulseX V1').catch(()=>[]),
+      fetchSubgraphPairs(GRAPH_V2,'PulseX V2').catch(()=>[]),
+    ]);
+    const bootstrap=deriveUSDPrices([...v1P,...v2P]);
+    document.getElementById('status-text').textContent='Fetching on-chain DEXes…';
+    const rpcRes=await Promise.all(RPC_DEXES.map(d=>fetchRpcPairs(d,bootstrap).catch(()=>[])));
+    allPairs=[...v1P,...v2P,...rpcRes.flat()];
+    usdPrices=deriveUSDPrices(allPairs);
+    crossOpps=findCrossArb(allPairs);
+    triCycles=findTriArb(allPairs);
+    allOpps=[...crossOpps.map(o=>({...o,type:'cross'})),...triCycles.map(o=>({...o,type:'tri'}))];
+    allOpps.sort((a,b)=>b.spread-a.spread);
+    dot.className='dot';
+    document.getElementById('status-text').textContent=`Live · ${allOpps.length} opportunities found across ${allPairs.length} pairs`;
+    document.getElementById('last-scan').textContent='Last: '+new Date().toLocaleTimeString();
+    document.getElementById('m-opps').textContent=allOpps.length;
+    document.getElementById('m-best').textContent=allOpps[0]?allOpps[0].spread.toFixed(2)+'%':'0%';
+    renderOpps();
+  }catch(e){
+    dot.className='dot error';
+    document.getElementById('status-text').textContent='Scan failed — check connection';
+    console.error(e);
+  }
+  scanning=false;
+}
+
+// ═══════════════════════════════════════════════════════════
+// RENDER OPPORTUNITIES
+// ═══════════════════════════════════════════════════════════
+function renderOpps(){
+  const filter=document.getElementById('filter-type').value;
+  const opps=allOpps.filter(o=>filter==='all'||o.type===filter).slice(0,25);
+  const el=document.getElementById('opp-list');
+  if(!opps.length){el.innerHTML='<div style="text-align:center;color:var(--muted);padding:24px;font-size:12px;">No opportunities found yet. Click Scan Now.</div>';return;}
+  el.innerHTML=opps.map((o,i)=>{
+    const pct=o.spread;
+    const sig=pct>2?'badge-green':pct>0.6?'badge-amber':'badge-red';
+    const sigLabel=pct>2?'Strong':pct>0.6?'Marginal':'Slim';
+    const profit=(pct/100)*200*0.9942;
+    const label=o.type==='cross'?`${o.buyDex} → ${o.sellDex}`:`${o.a}→${o.b}→${o.c} (${o.dex})`;
+    const selected=selectedOpp&&selectedOpp===o;
+    return`<div class="opp-card${selected?' selected':''}" onclick="selectOpp(${i})">
+      <div class="opp-card-header">
+        <span class="opp-pair">${o.token}</span>
+        <span class="opp-spread">+${pct.toFixed(3)}%</span>
+      </div>
+      <div class="opp-route">${label}</div>
+      <div class="opp-meta">
+        <span class="badge ${sig}">${sigLabel}</span>
+        <span class="opp-type">${o.type==='cross'?'Cross-DEX':'Tri-arb'}</span>
+        <span>~$${profit.toFixed(2)} on $200</span>
+        ${o.type==='cross'&&o.buyPair?`<span>Pool: $${fmtLiq(Math.min(o.buyPair?.resUSD||0,o.sellPair?.resUSD||0))}</span>`:''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectOpp(i){
+  const filter=document.getElementById('filter-type').value;
+  const opps=allOpps.filter(o=>filter==='all'||o.type===filter).slice(0,25);
+  selectedOpp=opps[i];
+  renderOpps();
+  updateExec();
+  document.getElementById('timer-panel').style.display='block';
+  resetTimer();
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXECUTION PANEL
+// ═══════════════════════════════════════════════════════════
+function updateExec(){
+  if(!selectedOpp){return;}
+  const budget=parseFloat(document.getElementById('budget').value)||200;
+  const o=selectedOpp;
+  const panel=document.getElementById('exec-panel');
+  const badge=document.getElementById('exec-badge');
+
+  const sig=o.spread>2?'badge-green':o.spread>0.6?'badge-amber':'badge-red';
+  badge.innerHTML=`<span class="badge ${sig}">${o.spread.toFixed(3)}% spread</span>`;
+
+  if(o.type==='cross'){
+    const t0=o.token.split("/")[0],t1=o.token.split("/")[1];
+    const bp=o.buyPair,sp=o.sellPair;
+    const buyT0=swapAddr(bp?(bp.s0===t0?bp.a0:bp.a1):(TOKEN_ADDRS[t0]||"ETH"));
+    const buyT1=swapAddr(bp?(bp.s0===t0?bp.a1:bp.a0):(TOKEN_ADDRS[t1]||"ETH"));
+    const sellT0=swapAddr(sp?(sp.s0===t1?sp.a0:sp.a1):(TOKEN_ADDRS[t1]||"ETH"));
+    const sellT1=swapAddr(sp?(sp.s0===t1?sp.a1:sp.a0):(TOKEN_ADDRS[t0]||"ETH"));
+    const buyLink=DEX_LINKS[o.buyDex]?DEX_LINKS[o.buyDex](buyT0,buyT1):"#";
+    const sellLink=DEX_LINKS[o.sellDex]?DEX_LINKS[o.sellDex](sellT0,sellT1):"#";
+    const buyClass=DEX_CLASS[o.buyDex]||'';
+    const sellClass=DEX_CLASS[o.sellDex]||'';
+    // Price impact estimate (simplified: budget / pool_depth * 100)
+    const minPool=Math.min(o.buyPair?.resUSD||100000,o.sellPair?.resUSD||100000);
+    const impact=(budget/minPool)*100*2; // x2 for constant product curve approximation
+    const grossProfit=(o.spread/100)*budget;
+    const feesCost=budget*0.0058;
+    const impactCost=budget*(impact/100);
+    const netProfit=grossProfit-feesCost-impactCost;
+    // Update calc grid
+    document.getElementById('c-size').textContent='$'+budget.toFixed(0);
+    document.getElementById('c-depth').textContent='$'+fmtLiq(minPool);
+    document.getElementById('c-impact').textContent=impact.toFixed(3)+'%';
+    document.getElementById('c-profit').textContent=(netProfit>=0?'+':'')+'$'+netProfit.toFixed(2);
+    document.getElementById('c-profit').className='calc-val '+(netProfit>=0?'g':'r');
+    document.getElementById('c-spread').textContent=o.spread.toFixed(3)+'%';
+    document.getElementById('c-time').textContent='~60s';
+    // Estimate output of leg 1
+    const leg1Out=budget*(1/o.buyRate)*(1-0.003); // approx tokens received
+    panel.innerHTML=`
+      <div class="exec-step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <div class="step-title">Buy ${t1} on ${o.buyDex}</div>
+          <div class="step-detail">Swap your ${t0} for ${t1} on the cheaper DEX.</div>
+          <div class="step-amount">Input: $${budget.toFixed(2)} worth of ${t0}</div>
+          <div class="step-detail" style="color:var(--green);">Expected output: ~${(leg1Out).toFixed(4)} ${t1}</div>
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+            <a href="${buyLink}" target="_blank" class="step-link ${buyClass}">🔗 Open ${o.buyDex}</a>
+            <span style="font-size:10px;color:var(--muted);align-self:center;">Set slippage: 0.5%</span>
+          </div>
+        </div>
+      </div>
+      <div class="exec-step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <div class="step-title">Sell ${t1} on ${o.sellDex}</div>
+          <div class="step-detail">Immediately swap your ${t1} back to ${t0} on the more expensive DEX.</div>
+          <div class="step-amount">Input: ALL your ${t1} from step 1</div>
+          <div class="step-detail" style="color:var(--green);">Expected output: ~$${(budget+grossProfit-feesCost).toFixed(2)} worth of ${t0}</div>
+          <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+            <a href="${sellLink}" target="_blank" class="step-link ${sellClass}">🔗 Open ${o.sellDex}</a>
+            <span style="font-size:10px;color:var(--muted);align-self:center;">Set slippage: 0.5%</span>
+          </div>
+        </div>
+      </div>
+      <div class="exec-step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <div class="step-title">Verify &amp; Log Result</div>
+          <div class="step-detail">Check your wallet balance. If you ended up with more ${t0} than you started with, log it in the journal below!</div>
+          <div class="step-amount" style="color:${netProfit>=0?'var(--green)':'var(--amber)'}">
+            Est. net profit: ${netProfit>=0?'+':''}$${netProfit.toFixed(2)} 
+            ${netProfit<0?'⚠ Impact may exceed spread at this size — try smaller amount':' ✓'}
+          </div>
+          <button class="btn-green" style="margin-top:8px;" onclick="prefillJournal()">📓 Pre-fill journal</button>
+        </div>
+      </div>`;
+
+  } else if(o.type==='tri'){
+    // Tri-arb execution
+    const pairs=[o.pairAB,o.pairBC,o.pairCA];
+    const tokens=[o.a,o.b,o.c,o.a];
+    const rates=[o.r1,o.r2,o.r3];
+    let runningAmt=budget;
+    const steps=tokens.slice(0,3).map((tok,i)=>{
+      const next=tokens[i+1];
+      const linkFn=DEX_LINKS[o.dex];
+      const pairKey=i===0?"pairAB":i===1?"pairBC":"pairCA";
+      const pr=o[pairKey];
+      const fromAddr=swapAddr(pr?(pr.s0===tok?pr.a0:pr.a1):(TOKEN_ADDRS[tok]||"ETH"));
+      const toAddr=swapAddr(pr?(pr.s0===tok?pr.a1:pr.a0):(TOKEN_ADDRS[next]||"ETH"));
+      const link=linkFn?linkFn(fromAddr,toAddr):"#";
+      const cls=DEX_CLASS[o.dex]||'';
+      const outAmt=runningAmt*rates[i];
+      const outUSD=(usdPrices[next]||0)*outAmt;
+      const inAmt=runningAmt;
+      runningAmt=outAmt;
+      return{tok,next,link,cls,inAmt,outAmt,outUSD,rate:rates[i]};
+    });
+    const finalUSD=(usdPrices[o.a]||0)*runningAmt;
+    const netProfit=finalUSD-budget;
+    document.getElementById('c-size').textContent='$'+budget.toFixed(0);
+    document.getElementById('c-depth').textContent=fmtLiq(Math.min(...(pairs.filter(Boolean).map(p=>p?.resUSD||0))));
+    document.getElementById('c-impact').textContent='~0.05%';
+    document.getElementById('c-profit').textContent=(netProfit>=0?'+':'')+'$'+netProfit.toFixed(2);
+    document.getElementById('c-profit').className='calc-val '+(netProfit>=0?'g':'r');
+    document.getElementById('c-spread').textContent=o.gross.toFixed(3)+'%';
+    document.getElementById('c-time').textContent='~90s';
+    panel.innerHTML=steps.map((s,i)=>`
+      <div class="exec-step">
+        <div class="step-num">${i+1}</div>
+        <div class="step-body">
+          <div class="step-title">Swap ${s.tok} → ${s.next} on ${o.dex}</div>
+          <div class="step-detail">Rate: ×${s.rate.toFixed(6)} (after 0.3% fee)</div>
+          <div class="step-amount">~${fmtBal(s.inAmt)} ${s.tok} → ~${fmtBal(s.outAmt)} ${s.next}</div>
+          <a href="${s.link}" target="_blank" class="step-link ${s.cls}">🔗 Open ${o.dex}</a>
+        </div>
+      </div>`).join('')+
+    `<div class="exec-step">
+      <div class="step-num">4</div>
+      <div class="step-body">
+        <div class="step-title">Verify &amp; Log</div>
+        <div class="step-detail">Check your final ${o.a} balance vs your starting amount.</div>
+        <div class="step-amount" style="color:${netProfit>=0?'var(--green)':'var(--amber)'}">
+          Est. final value: $${finalUSD.toFixed(2)}  |  Net: ${netProfit>=0?'+':''}$${netProfit.toFixed(2)}
+        </div>
+        <button class="btn-green" style="margin-top:8px;" onclick="prefillJournal()">📓 Pre-fill journal</button>
+      </div>
+    </div>`;
+  }
+}
+
+function prefillJournal(){
+  if(!selectedOpp)return;
+  const o=selectedOpp;
+  const budget=parseFloat(document.getElementById('budget').value)||200;
+  document.getElementById('j-pair').value=o.type==='cross'?o.token:`${o.a}→${o.b}→${o.c}`;
+  document.getElementById('j-type').value=o.type;
+  document.getElementById('j-in').value=budget.toFixed(2);
+  document.getElementById('j-buy').value=o.type==='cross'?o.buyDex:o.dex;
+  document.getElementById('j-sell').value=o.type==='cross'?o.sellDex:o.dex;
+  document.getElementById('j-spread').value=o.spread.toFixed(3);
+  document.getElementById('j-out').focus();
+  showToast('Journal pre-filled — enter your actual output amount after completing the trade','warn');
+}
+
+function quickBudget(){
+  const v=document.getElementById('budget-quick').value;
+  if(v){document.getElementById('budget').value=v;updateExec();}
+  document.getElementById('budget-quick').value='';
+}
+
+// ═══════════════════════════════════════════════════════════
+// TIMER
+// ═══════════════════════════════════════════════════════════
+function startTimer(){
+  if(timerRunning){clearInterval(timerInterval);timerRunning=false;document.querySelector('.timer-controls button').textContent='▶ Start';return;}
+  timerRunning=true;document.querySelector('.timer-controls button').textContent='⏸ Pause';
+  timerInterval=setInterval(()=>{
+    timerSeconds--;
+    const arc=document.getElementById('timer-arc');
+    const text=document.getElementById('timer-text');
+    const label=document.getElementById('timer-label');
+    const pct=timerSeconds/60;
+    arc.setAttribute('stroke-dashoffset',(238.76*(1-pct)).toString());
+    text.textContent=timerSeconds;
+    arc.setAttribute('stroke',timerSeconds>20?'var(--green)':timerSeconds>10?'var(--amber)':'var(--red)');
+    text.className='timer-text'+(timerSeconds<=10?' timer-critical':timerSeconds<=20?' timer-warn':'');
+    label.textContent=timerSeconds>0?'seconds to execute':'TIME UP — prices may have moved!';
+    if(timerSeconds<=0){clearInterval(timerInterval);timerRunning=false;showToast('Timer expired! Prices may have changed. Re-scan before executing.','warn');}
+  },1000);
+}
+function resetTimer(){
+  clearInterval(timerInterval);timerRunning=false;timerSeconds=60;
+  document.getElementById('timer-arc').setAttribute('stroke-dashoffset','0');
+  document.getElementById('timer-arc').setAttribute('stroke','var(--green)');
+  document.getElementById('timer-text').textContent='60';
+  document.getElementById('timer-text').className='timer-text';
+  document.getElementById('timer-label').textContent='seconds to execute';
+  document.querySelector('.timer-controls button').textContent='▶ Start';
+}
+
+// ═══════════════════════════════════════════════════════════
+// CHECKLIST
+// ═══════════════════════════════════════════════════════════
+function checkAll(state){
+  document.querySelectorAll('.check-icon').forEach(el=>{
+    el.textContent=state?'✓':'?';
+    el.className='check-icon '+(state?'done':'warn');
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// JOURNAL
+// ═══════════════════════════════════════════════════════════
+function logTrade(){
+  const pair=document.getElementById('j-pair').value.trim();
+  const amtIn=parseFloat(document.getElementById('j-in').value);
+  const amtOut=parseFloat(document.getElementById('j-out').value);
+  if(!pair||!amtIn||!amtOut){showToast('Fill in pair, amount in, and amount out','warn');return;}
+  const pnl=amtOut-amtIn;
+  const pnlPct=(pnl/amtIn)*100;
+  const entry={
+    id:Date.now(),
+    pair,type:document.getElementById('j-type').value,
+    amtIn,amtOut,pnl,pnlPct,
+    spread:parseFloat(document.getElementById('j-spread').value)||0,
+    buyDex:document.getElementById('j-buy').value,
+    sellDex:document.getElementById('j-sell').value,
+    notes:document.getElementById('j-notes').value,
+    date:new Date().toLocaleString(),
+    win:pnl>0
+  };
+  journal.unshift(entry);
+  saveJournal();
+  // Clear form
+  ['j-pair','j-in','j-out','j-spread','j-buy','j-sell','j-notes'].forEach(id=>document.getElementById(id).value='');
+  renderJournal();
+  if(entry.win){
+    const wins=journal.filter(t=>t.win).length;
+    if(wins===5){
+      document.getElementById('modal-title').textContent='🏆 FIVE WINS! Distribution Unlocked!';
+      document.getElementById('modal-body').textContent=`Incredible! You've successfully profited from 5 arbitrage opportunities. Total P&L: $${journal.filter(t=>t.win).reduce((a,t)=>a+t.pnl,0).toFixed(2)}. Time to share the dashboard with the world!`;
+      document.getElementById('win-modal').classList.add('show');
+    } else {
+      document.getElementById('modal-title').textContent=`Win #${wins} Logged! 🎉`;
+      document.getElementById('modal-body').textContent=`+$${pnl.toFixed(2)} profit on ${pair}. ${5-wins} more win${5-wins!==1?'s':''} to go until distribution is unlocked!`;
+      document.getElementById('win-modal').classList.add('show');
+    }
+  } else {
+    showToast(`Trade logged: ${pnl>=0?'+':''}$${pnl.toFixed(2)} on ${pair}`,'warn');
+  }
+}
+
+function saveJournal(){localStorage.setItem('arb-journal',JSON.stringify(journal));}
+
+function renderJournal(){
+  const wins=journal.filter(t=>t.win);
+  const totalPnl=journal.reduce((a,t)=>a+t.pnl,0);
+  const winCount=wins.length;
+  document.getElementById('m-wins').textContent=`${winCount} / 5`;
+  document.getElementById('m-pnl').textContent=(totalPnl>=0?'+':'')+'$'+totalPnl.toFixed(2);
+  document.getElementById('m-pnl').className='metric-value '+(totalPnl>=0?'g':'r');
+  document.getElementById('m-trades').textContent=journal.length;
+  document.getElementById('wins-display').textContent=winCount;
+  document.getElementById('wins-bar').style.width=Math.min(100,(winCount/5)*100)+'%';
+  document.getElementById('journal-summary').textContent=
+    journal.length?`${journal.length} trade${journal.length!==1?'s':''} · ${winCount} win${winCount!==1?'s':''} · ${journal.length-winCount} loss/break-even · Net: ${totalPnl>=0?'+':''}$${totalPnl.toFixed(2)}`:'';
+  const el=document.getElementById('journal-entries');
+  if(!journal.length){
+    el.innerHTML='<div style="text-align:center;color:var(--muted);padding:20px;font-size:12px;">No trades logged yet.</div>';
+    return;
+  }
+  el.innerHTML=`<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:11px;">
+    <thead><tr style="border-bottom:1px solid var(--border);">
+      <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;">#</th>
+      <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:10px;">Pair</th>
+      <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:10px;">Route</th>
+      <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:10px;">In</th>
+      <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:10px;">Out</th>
+      <th style="padding:6px 8px;text-align:right;color:var(--muted);font-size:10px;">P&L</th>
+      <th style="padding:6px 8px;text-align:center;color:var(--muted);font-size:10px;">Result</th>
+      <th style="padding:6px 8px;text-align:left;color:var(--muted);font-size:10px;">Date</th>
+      <th></th>
+    </tr></thead><tbody>
+    ${journal.map((t,i)=>`<tr style="border-bottom:1px solid var(--border2);">
+      <td style="padding:7px 8px;"><div class="j-num" style="margin:0;">${journal.length-i}</div></td>
+      <td style="padding:7px 8px;font-weight:600;color:var(--text);">${t.pair}</td>
+      <td style="padding:7px 8px;color:var(--muted2);font-size:10px;">${t.buyDex||t.type}${t.sellDex&&t.buyDex!==t.sellDex?'→'+t.sellDex:''}</td>
+      <td style="padding:7px 8px;text-align:right;color:var(--muted2);">$${t.amtIn.toFixed(2)}</td>
+      <td style="padding:7px 8px;text-align:right;color:var(--muted2);">$${t.amtOut.toFixed(2)}</td>
+      <td style="padding:7px 8px;text-align:right;font-weight:700;" class="${t.win?'j-pnl-pos':'j-pnl-neg'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td>
+      <td style="padding:7px 8px;text-align:center;" class="${t.win?'j-status-win':'j-status-loss'}">${t.win?'✅ WIN':'❌'}</td>
+      <td style="padding:7px 8px;color:var(--muted);font-size:10px;white-space:nowrap;">${t.date}</td>
+      <td style="padding:7px 4px;"><button class="j-del" onclick="deleteEntry(${t.id})">✕</button></td>
+    </tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function deleteEntry(id){
+  journal=journal.filter(t=>t.id!==id);
+  saveJournal();renderJournal();
+}
+function clearJournal(){
+  if(!confirm('Clear all journal entries?'))return;
+  journal=[];saveJournal();renderJournal();
+  showToast('Journal cleared');
+}
+function exportJournal(){
+  if(!journal.length){showToast('No trades to export','warn');return;}
+  const rows=[['#','Date','Pair','Type','Buy DEX','Sell DEX','Amount In ($)','Amount Out ($)','P&L ($)','P&L %','Spread %','Result','Notes']];
+  journal.forEach((t,i)=>rows.push([
+    journal.length-i,t.date,t.pair,t.type,t.buyDex||'',t.sellDex||'',
+    t.amtIn.toFixed(2),t.amtOut.toFixed(2),t.pnl.toFixed(2),t.pnlPct.toFixed(3),
+    t.spread||'',t.win?'WIN':'LOSS/BREAK-EVEN',t.notes||''
+  ]));
+  const csv=rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');
+  const blob=new Blob([csv],{type:'text/csv'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`arb-journal-${new Date().toISOString().slice(0,10)}.csv`;a.click();
+  showToast('Journal exported!');
+}
+function closeModal(){document.getElementById('win-modal').classList.remove('show');}
+
+// ═══════════════════════════════════════════════════════════
+// AUTO REFRESH
+// ═══════════════════════════════════════════════════════════
+function toggleAutoRefresh(){
+  autoRefresh=!autoRefresh;
+  const btn=document.getElementById('auto-btn');
+  const metric=document.getElementById('m-refresh');
+  if(autoRefresh){
+    btn.textContent='⏹ Auto';btn.className='btn-green';
+    metric.textContent='30s';
+    autoInterval=setInterval(()=>{runScan();},30000);
+    showToast('Auto-refresh every 30s');
+  } else {
+    btn.textContent='▶ Auto';btn.className='';
+    metric.textContent='Off';
+    clearInterval(autoInterval);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// THEME + HELPERS
+// ═══════════════════════════════════════════════════════════
+function toggleTheme(){
+  const html=document.documentElement;
+  const isDark=html.getAttribute('data-theme')==='dark';
+  html.setAttribute('data-theme',isDark?'light':'dark');
+  document.getElementById('theme-btn').textContent=isDark?'🌙 Dark':'☀️ Light';
+}
+function showToast(msg,type='ok'){
+  const t=document.getElementById('toast');t.textContent=msg;
+  t.className=`toast show ${type}`;clearTimeout(t._t);
+  t._t=setTimeout(()=>t.classList.remove('show'),4000);
+}
+const fmtLiq=n=>n>=1e6?'$'+(n/1e6).toFixed(1)+'M':n>=1e3?'$'+(n/1e3).toFixed(0)+'K':'$'+n.toFixed(0);
+const fmtBal=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(2)+'K':n.toFixed(4);
+
+// ── INIT ─────────────────────────────────────────────────
+renderJournal();
+runScan();
+</script>
+</body>
+</html>
