@@ -63,7 +63,7 @@ For each route, the engine first finds the largest feasible input size by binary
 5. Click **Inspect** to open the Trade Companion. It shows reserves or v3 state for every leg, the depth caps, and the exact BigInt calculation.
 6. **Before acting on any row:**
    - Re-scan to confirm the opportunity is still there in a fresh block.
-   - Subtract the gas cost for 2 or 3 swaps; it is **not** deducted in the table.
+   - Check the **net after gas** line. Gas is estimated from the live `eth_gasPrice` × 250,000 gas (2-hop) or 350,000 gas (3-hop), valued at WPLS/USD. Real gas use depends on your execution contract.
    - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
    - Check the pool addresses on scan.pulsechain.com.
 7. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
@@ -74,15 +74,16 @@ For each route, the engine first finds the largest feasible input size by binary
 |---|---|
 | `not profitable at any size` | Fees are larger than the price gap at every size. |
 | `+x TOKEN` profit | Gross profit at the optimal size, before gas. |
+| `net after gas` | Profit in USD minus the estimated gas cost (green = still profitable). |
 | `v3 in-interval (conservative cap)` | Size is limited by the current tick, so the real depth may be larger. |
 | `3-hop triangular` | Triangular route. Only profitable ones are listed. |
 | Hidden: suspicious/dust | Thin or anomalous pools have been left out for your safety. |
 
-**Live findings (1 Nov 2026, block ~27.94M):** no profitable two-pool or triangular routes after DEX fees. The best gross gap was 0.22% (WPLS–WETH, PulseX v2 → LibertySwap V3 0.25%), which is below the combined 0.54% in fees. The WETH bridge check showed about +0.17% to +0.30% against Coinbase before gas and slippage. Efficient markets tend to close these gaps fast, so the tool is most useful during volatility.
+**Live findings (1 Nov 2026, block ~27.94M):** no profitable two-pool or triangular routes after DEX fees. The best gross gap was 0.22% (WPLS–WETH, PulseX v2 → LibertySwap V3 0.25%), which is below the combined 0.54% in fees. At about 444,000 gwei, the estimated gas is under $0.001 per route, so DEX fees, not gas, are what close the gap. The WETH bridge check showed about +0.17% to +0.30% against Coinbase before gas and slippage. Efficient markets tend to close these gaps fast, so the tool is most useful during volatility.
 
 ## 6. Risks and limitations
 
-- Gas, MEV and pending-block state are not modelled.
+- Gas is an estimate (fixed gas units × live gas price). MEV and pending-block state are not modelled.
 - v3 sizing is limited to the current tick, with no multi-tick crossing.
 - The results are a snapshot. By the time a transaction lands, reserves may have changed.
 - Bridge round-trips are non-atomic and carry price risk.
@@ -102,9 +103,9 @@ The tool is read-only: it uses only `eth_call` and HTTPS GET requests. There is 
 
 ## 9. Roadmap
 
-Gas-adjusted net profit · multi-tick v3 crossing · an atomic execution contract (flash-swap) · alerting · more venues and tokens.
+Multi-tick v3 crossing · an atomic execution contract (flash-swap) · alerting · more venues and tokens.
 
 ## 10. Version history
 
-- **v4.4:** triangular 3-hop routes, separate route counts in the summary, and old pages redirected to the scanner.
+- **v4.4:** triangular 3-hop routes, gas-adjusted net profit, separate route counts in the summary, and old pages redirected to the scanner.
 - **v4.3:** live Multicall3 reserves, verified fees, LibertySwap V3 and bridge quotes, and a BigInt engine.
