@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.7)
+# Arb-Me-Now — Process Manual & White Paper (v4.8)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -13,7 +13,7 @@ Arb-Me-Now finds price differences between decentralised exchanges (DEXs) on Pul
 | Layer | What it does |
 |---|---|
 | Data | Public RPC `rpc.pulsechain.com`. All pool states are read in **one** Multicall3 `tryBlockAndAggregate` call (selector `0x399542e9`), so every price comes from the same block. PulseChain RPC rejects JSON-RPC batch requests, so Multicall3 is required. |
-| Tick data (v4.5) | A second Multicall3 call, pinned to the **same block**, reads `ticks(int24)` (selector `0xf30dba93`) for up to 4 initialised-boundary ticks on each side of every v3 pool, giving `liquidityNet` at each crossing. If this read fails, the engine falls back to single-interval maths. |
+| Tick data (v4.5, adaptive since v4.8) | A second Multicall3 call, pinned to the **same block**, reads `ticks(int24)` (selector `0xf30dba93`) for an adaptive number of boundary ticks on each side of every v3 pool (see §3.9; cap 1–8, default 4), giving `liquidityNet` at each crossing. If this read fails, the engine falls back to single-interval maths. |
 | Discovery | `getPair` / `getPool` lookups on each factory for a fixed list of liquid pairs over the watch list (v4.7: WPLS, PLSX, HEX, eHEX, INC, WETH, DAI and bridged stables; new pairs WPLS/eHEX, HEX/eHEX, eHEX/DAI, WPLS/INC, PLSX/INC, INC/HEX, WETH/DAI, WETH/PLSX, WETH/HEX). |
 | Engine | Pure BigInt maths (`engine.js`) with exact integer swap formulas and no floating-point rounding in the money path. It is unit-tested in Node (`test.js`). |
 | UI | A single self-contained `index.html` hosted on GitHub Pages, with no backend. |
@@ -34,7 +34,7 @@ All fees were checked on-chain, not taken from documentation.
 
 ### 3.1 Swap maths
 - **v2 (constant product):** `out = in·(10000−fee)·R_out / (R_in·10000 + in·(10000−fee))`, using integer division the same way the pool contract does.
-- **v3 (concentrated liquidity, multi-tick since v4.5):** exact swap maths using `sqrtPriceX96` and active liquidity `L`, walking across up to **4 tickSpacing intervals per direction**. When the price crosses a boundary tick, `liquidityNet` is added (moving up) or subtracted (moving down) to get the next interval's `L`. The fee is taken on the gross input. Any trade that would go beyond the last interval read, or into an interval with zero liquidity, is treated as infeasible. If tick data is unavailable, the engine falls back to the conservative single-interval model.
+- **v3 (concentrated liquidity, multi-tick since v4.5):** exact swap maths using `sqrtPriceX96` and active liquidity `L`, walking across up to **N tickSpacing intervals per direction** (N adaptive since v4.8, §3.9; cap 1–8, default 4). When the price crosses a boundary tick, `liquidityNet` is added (moving up) or subtracted (moving down) to get the next interval's `L`. The fee is taken on the gross input. Any trade that would go beyond the last interval read, or into an interval with zero liquidity, is treated as infeasible. If tick data is unavailable, the engine falls back to the conservative single-interval model.
 
 ### 3.2 Safe-depth caps
 - A v2 leg may use at most **10% of the input reserve**.
@@ -66,6 +66,9 @@ For each route, the engine first finds the largest feasible input size by binary
 
 ### 3.8 Wallet send (v4.7)
 Trade Companion's opt-in **Connect & Send** uses the injected EIP-1193 wallet (MetaMask): `eth_requestAccounts` → `wallet_switchEthereumChain` to `0x171` (369) → `owner()` read on the executor; sending is blocked unless the connected account is the owner → `eth_sendTransaction` with the built `execute(...)` calldata → the tx hash is shown with an explorer link. Keys never leave the wallet.
+
+### 3.9 Adaptive tick depth (v4.8)
+For each V3 pool the engine first computes the current interval's capacity *C* in start-token (S) units: the smaller of `v3MaxIn` with S as input and `v3MaxIn` with the other token as input, converted to S at the pool's sqrtPrice. It then reads `d = clamp(⌊size / C⌋ + 2, 2, cap)` tick intervals per direction, where *cap* is the user's slider value (1–8; cap 1 means single-interval maths). Pools that do not contain S (middle legs of 3-hop routes) read the full cap. Live check (2026-11-01, WPLS start): at 1,000 WPLS deep pools read 2 intervals; at 10⁸ WPLS they read 6–8; with cap 1 every pool reads 1.
 
 ## 4. Operating Procedure (step by step)
 
@@ -103,7 +106,7 @@ Trade Companion's opt-in **Connect & Send** uses the injected EIP-1193 wallet (M
 ## 6. Risks and limitations
 
 - Gas is an estimate (fixed gas units × live gas price). MEV and pending-block state are not modelled.
-- v3 depth is limited to 4 tick intervals per direction; deeper liquidity is not modelled.
+- v3 depth is limited to the adaptive tick depth (max 8 intervals per direction); liquidity beyond that is not modelled.
 - ArbExecutor: a public-mempool tx can be front-run or the price can move after the dry run; then it reverts and gas is lost. The contract is unaudited; use small sizes first.
 - Alerts run in the browser only: the tab must stay open, and the browser or OS may block notifications or sound.
 - The results are a snapshot. By the time a transaction lands, reserves may have changed.
@@ -124,10 +127,11 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 9. Roadmap
 
-v4.8 adaptive tick depth · v4.9 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
+v4.9 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.8:** Adaptive V3 tick depth: per-pool interval count sized to the trade (1–8 cap slider, same-block reads), depth range in telemetry.
 - **v4.7:** New tokens eHEX, INC (and WETH pairs) with 9 liquid pairs; opt-in MetaMask Connect & Send (chain switch, owner check, wallet-signed tx).
 - **v4.6.1:** Fixed stale browser tab title (v4.3 → v4.6); white paper PDF regenerated.
 - **v4.6:** ArbExecutor atomic flash-swap contract (PulseX v1/v2, 9mm, LibertySwap V3; 2–4 legs), fork-tested; Trade Companion execution panel with calldata builder and read-only dry run.

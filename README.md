@@ -71,6 +71,11 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Changelog
 
+### v4.8 (2026-11-01)
+- Adaptive V3 tick depth: each LibertySwap V3 pool reads only as many tick intervals as the trade size needs (capacity-based, min 2), capped by a new **V3 tick depth** slider (1–8, default 4). Same-block Multicall3 reads; telemetry shows the depth range used.
+- Live check: 1k WPLS → 2 intervals on deep pools; 10⁸ WPLS → 6–8; cap 1 → single-interval.
+- White paper v4.8 (§2, new §3.9, §6, roadmap, history) + PDF regenerated.
+
 ### v4.7 (2026-11-01)
 - New tokens: eHEX (bridged HEX), INC, plus WETH pairs — 9 new liquid pairs (WPLS/eHEX, HEX/eHEX, eHEX/DAI, WPLS/INC, PLSX/INC, INC/HEX, WETH/DAI, WETH/PLSX, WETH/HEX), verified on-chain.
 - Trade Companion: opt-in 🦊 Connect & Send — switches MetaMask to PulseChain, checks executor `owner()`, sends the built calldata via the wallet, shows tx hash + explorer link. Keys never touch the page.

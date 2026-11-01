@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.7</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.8</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.7 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.8 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -167,6 +167,8 @@
         <input id="in-size" type="text" value="1000" inputmode="decimal"></div>
       <div class="input-group"><label>Min profit (bps of input)</label>
         <input id="in-minbps" type="number" value="0" min="0" step="1"></div>
+      <div class="input-group"><label>V3 tick depth cap: <b id="tickdepth-val">4</b> intervals/side</label>
+        <input id="in-tickdepth" type="range" min="1" max="8" step="1" value="4" oninput="document.getElementById('tickdepth-val').textContent=this.value" title="Max initialized-tick intervals read per direction for each LibertySwap V3 pool. Each pool reads only as many as your trade size needs, up to this cap."></div>
       <div class="input-group"><label>Recipient for LibertySwap quotes (optional)</label>
         <input id="in-recipient" type="text" placeholder="0x… (quotes only, nothing is signed)"></div>
       <div class="toggle-group">
@@ -248,7 +250,7 @@
     <div class="docs-section"><h4>Math</h4>
       <ul>
         <li>v2: <code>out = in·(1e6−fee)·rOut / (rIn·1e6 + in·(1e6−fee))</code>, in integers (fee in ppm). The input size is capped at 10% of the input reserve.</li>
-        <li>v3: exact Uniswap-v3 swap math (full TickMath port, <code>getAmount0Delta/getAmount1Delta</code> rounding), <b>multi-tick since v4.5</b>: the swap walks up to 4 tickSpacing intervals per direction. Crossing a tick upward adds its <code>liquidityNet</code>; crossing downward subtracts it (uninitialized ticks have net 0). The fee is taken on the gross input. A swap that would go beyond the intervals read, or into a region with zero liquidity, is rejected, not approximated (flag “v3 multi-tick (≤N intervals)”). If the tick read fails, the scanner falls back to the old single-interval model (flag “v3 in-interval”).</li>
+        <li>v3: exact Uniswap-v3 swap math (full TickMath port, <code>getAmount0Delta/getAmount1Delta</code> rounding), <b>multi-tick since v4.5</b>: the swap walks up to N tickSpacing intervals per direction (adaptive since v4.8, cap 1–8 via the slider). Crossing a tick upward adds its <code>liquidityNet</code>; crossing downward subtracts it (uninitialized ticks have net 0). The fee is taken on the gross input. A swap that would go beyond the intervals read, or into a region with zero liquidity, is rejected, not approximated (flag “v3 multi-tick (≤N intervals)”). If the tick read fails, the scanner falls back to the old single-interval model (flag “v3 in-interval”).</li>
         <li>Optimal size: binary search for the largest input that stays within both legs’ caps, then ternary search on the concave profit curve, then an exhaustive check of the final window.</li>
         <li>USD values: WPLS/USD comes from the deepest v2 WPLS/USDC or WPLS/DAI pool, treating the bridged stables as $1. Other tokens are priced through their deepest WPLS pool.</li>
       </ul></div>
@@ -273,12 +275,16 @@
         <li>Supported pools (callbacks verified on-chain): PulseX v1/v2 (<code>uniswapV2Call</code>), 9mm v2 (<code>pancakeCall</code>), LibertySwap V3 (<code>libertyV3SwapCallback</code>). Fee-on-transfer tokens are not supported.</li>
         <li>In Trade Companion, enter your deployed address, then <b>Build calldata</b> and <b>Dry run</b>. The dry run is an <code>eth_call</code> from the owner, so nothing is signed or sent. Send the calldata from your owner wallet to execute.</li>
         <li>Fork-tested on PulseChain: on an artificially created gap, the contract's profit matched the scanner's prediction exactly for v2→v2 and within 2 wei for a v3 leg. Live routes currently revert with <code>NoProfit</code>, as expected.</li></ul></div>
+    <div class="docs-section"><h4>New in v4.8: adaptive V3 tick depth</h4>
+      <ul><li>A <b>V3 tick depth cap</b> slider (1–8, default 4) sets the maximum number of initialized-tick intervals read per direction for each LibertySwap V3 pool.</li>
+        <li>Each pool reads only what your trade size needs: the engine measures the current interval's capacity in start-token units (tighter of both swap directions) and reads <code>size ÷ capacity + 2</code> intervals, at least 2 and at most the cap. Pools that don't contain the start token (3-hop middle legs) read the full cap.</li>
+        <li>All tick reads stay in the same Multicall3 call pinned to the same block. The telemetry strip shows the depth range used, e.g. "v3 tick depth 2–6 (cap 6)". Raise the cap if big trades show "exceeds safe depth".</li></ul></div>
     <div class="docs-section"><h4>New in v4.7: more tokens + 🦊 MetaMask send</h4>
       <ul><li>Watch list now includes <b>eHEX</b> (bridged Ethereum HEX, <code>0x57fd…d225</code>, 8 dec), <b>INC</b> (<code>0x2fa8…c95d</code>) and <b>WETH</b> (<code>0x02dc…3c3c</code>), with 9 extra liquid pairs (WPLS/eHEX, HEX/eHEX, eHEX/DAI, WPLS/INC, PLSX/INC, INC/HEX, WETH/DAI, WETH/PLSX, WETH/HEX). Addresses, decimals and reserves were checked on-chain.</li>
         <li>Trade Companion has an opt-in <b>Connect &amp; Send</b> button. It connects your injected wallet (MetaMask), switches to PulseChain (chain 369), checks that the connected account is the ArbExecutor <code>owner()</code>, then asks your wallet to sign and send the built calldata. Nothing is sent unless you click Send <i>and</i> approve in your wallet.</li>
         <li>The page still never sees or stores private keys; signing happens inside your wallet. Always run <b>Dry run</b> first; a public-mempool tx can still be front-run and revert (gas lost).</li></ul></div>
     <div class="docs-section"><h4>Limitations</h4>
-      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the multi-tick depth (up to 4 intervals) to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the 4 tick intervals read per direction. Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. The page only sends a transaction when you click Connect &amp; Send and approve it in your own wallet; otherwise it is read-only. MEV and price movement between dry run and execution can still make a transaction revert (gas lost). Verify on-chain before trading.</li></ul></div>
+      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the adaptive multi-tick depth (up to the slider cap, 1–8 intervals) to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the tick intervals read per direction (adaptive, capped by the V3 tick depth slider). Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. The page only sends a transaction when you click Connect &amp; Send and approve it in your own wallet; otherwise it is read-only. MEV and price movement between dry run and execution can still make a transaction revert (gas lost). Verify on-chain before trading.</li></ul></div>
   </div>
 </div>
 <script>
@@ -460,18 +466,52 @@ function v3AmountOut(amountIn, st, zeroForOne) {
 // Liquidity only changes at initialized ticks (multiples of tickSpacing). We read ticks(t) for the
 // V3_INTERVALS boundaries on each side of the price and build piecewise-constant-L intervals.
 // Crossing a tick upward adds liquidityNet; downward subtracts it (uninitialized ticks have net 0).
-const V3_INTERVALS = 4, MIN_TICK = -887272, MAX_TICK = 887272;
-function v3BoundaryTicks(tick, spacing) {
+let V3_INTERVALS = 4;         // default; UI slider writes v3DepthCap before each scan
+let v3DepthCap = 4;            // upper bound from the slider
+const MIN_TICK = -887272, MAX_TICK = 887272;
+// Adaptive depth (v4.8). Capacity of the CURRENT interval, expressed in start-token (S) units,
+// taking the tighter of the two swap directions (S in, and the other token in, converted to S at
+// the pool price). Pools that do not contain S (intermediate legs of 3-hop routes) get the full cap.
+function v3SingleIntervalCapS(p, S) {
+  const st = p.st; if (!st || st.L === 0n) return 0n;
+  const P = st.sqrtP * st.sqrtP;                     // token1/token0 price × 2^192
+  const SHIFT = 1n << 192n;
+  if (p.token0 === S) {
+    const inS = v3MaxIn(st, true);                   // S (token0) in
+    const in1 = v3MaxIn(st, false);                  // token1 in → convert to token0 units
+    const in1asS = P > 0n ? (in1 * SHIFT) / P : 0n;
+    return inS < in1asS ? inS : in1asS;
+  }
+  if (p.token1 === S) {
+    const inS = v3MaxIn(st, false);                  // S (token1) in
+    const in0 = v3MaxIn(st, true);                   // token0 in → convert to token1 units
+    const in0asS = (in0 * P) / SHIFT;
+    return inS < in0asS ? inS : in0asS;
+  }
+  return -1n;                                        // does not contain S
+}
+// Number of tick intervals to read for one pool: enough to cover the user's size, capped by the slider.
+function adaptiveDepth(p, userAmt, S) {
+  if (v3DepthCap <= 1) return 1;
+  if (!userAmt || userAmt <= 0n || !S) return v3DepthCap;
+  const cap1 = v3SingleIntervalCapS(p, S);
+  if (cap1 < 0n || cap1 === 0n) return v3DepthCap;
+  const needed = Number(userAmt / cap1) + 2;         // +1 rounding, +1 safety margin
+  return Math.max(2, Math.min(v3DepthCap, needed));  // never fewer than 2 when cap > 1
+}
+function setV3DepthCap(n) { v3DepthCap = Math.max(1, Math.min(8, Math.floor(Number(n) || 4))); V3_INTERVALS = v3DepthCap; }
+function v3BoundaryTicks(tick, spacing, depth) {
+  depth = depth || V3_INTERVALS;
   const lower = Math.floor(tick / spacing) * spacing, upper = lower + spacing, down = [], up = [];
-  for (let k = 0; k < V3_INTERVALS; k++) {
+  for (let k = 0; k < depth; k++) {
     if (lower - k * spacing >= MIN_TICK) down.push(lower - k * spacing);
     if (upper + k * spacing <= MAX_TICK) up.push(upper + k * spacing);
   }
   return { down, up };
 }
 // netByTick: Map tick -> liquidityNet (BigInt). Returns intervals ordered away from the current price.
-function buildV3Intervals(st, netByTick) {
-  const { down, up } = v3BoundaryTicks(st.tick, st.spacing);
+function buildV3Intervals(st, netByTick, depth) {
+  const { down, up } = v3BoundaryTicks(st.tick, st.spacing, depth || V3_INTERVALS);
   const intervalsDown = [], intervalsUp = [];
   let L = st.L, cur = st.sqrtP;
   for (const t of down) {               // price moving down: [sqrt(t), cur] at L, then cross t
@@ -603,7 +643,7 @@ async function discoverPools(enabled) {
   return pools;
 }
 
-async function fetchPoolStates(pools) {
+async function fetchPoolStates(pools, userAmountRaw, startAddr) {
   const calls = [], idx = [];
   pools.forEach((p, i) => {
     if (p.kind === 'v2') { calls.push({ target: p.address, data: SEL.getReserves }); idx.push([i, 'res']); }
@@ -629,10 +669,12 @@ async function fetchPoolStates(pools) {
     if (p.kind === 'v2') { if (p.r0 > 0n && p.r1 > 0n) live.push(p); }
     else if (p.L > 0n && p.spacing > 0) { p.st = makeV3State(p.sqrtP, p.tick, p.L, p.spacing, p.feePpm); live.push(p); }
   }
-  // Second pass at the SAME block: tick boundaries for multi-tick v3 depth.
+  // Second pass at the SAME block: tick boundaries — per-pool adaptive depth up to v3DepthCap.
   const tcalls = [], tidx = [];
   live.filter(p => p.kind === 'v3').forEach(p => {
-    const { down, up } = v3BoundaryTicks(p.tick, p.spacing);
+    const d = adaptiveDepth(p, userAmountRaw || 0n, startAddr);
+    p._tickDepth = d;   // store for telemetry
+    const { down, up } = v3BoundaryTicks(p.tick, p.spacing, d);
     for (const t of [...down, ...up]) {
       tcalls.push({ target: p.address, data: SEL.ticks + BigInt.asUintN(256, BigInt(t)).toString(16).padStart(64, '0') });
       tidx.push([p, t]);
@@ -647,7 +689,7 @@ async function fetchPoolStates(pools) {
         if (!maps.has(p)) maps.set(p, new Map());
         if (r.success && r.data.length >= 128) maps.get(p).set(t, BigInt.asIntN(256, wordBig(r.data, 1)));
       });
-      for (const [p, m] of maps) p.st = buildV3Intervals(p.st, m);
+      for (const [p, m] of maps) p.st = buildV3Intervals(p.st, m, p._tickDepth);
     } catch (e) { /* fall back to single-interval v3 */ }
   }
   return { block: Number(block), pools: live };
@@ -934,7 +976,10 @@ async function runScan() {
     const key = JSON.stringify(en);
     if (key !== state.discKey) { state.pools = await discoverPools(en); state.discKey = key; }
     if (!state.pools.length) throw new Error('No venues enabled or no pools found.');
-    const { block, pools } = await fetchPoolStates(state.pools);
+    const S0 = $('in-start').value;
+    setV3DepthCap($('in-tickdepth') ? $('in-tickdepth').value : 4);
+    let uRaw0 = 0n; try { uRaw0 = parseUnits($('in-size').value, TOKENS[S0].dec); } catch (e) { uRaw0 = 0n; }
+    const { block, pools } = await fetchPoolStates(state.pools, uRaw0, TOKENS[S0].addr);
     state.block = block; state.live = pools; state.snapAt = Date.now();
     state.wpls = wplsUsd(pools);
     try { state.gasPrice = BigInt(await rpc('eth_gasPrice', [])); } catch (e) { state.gasPrice = null; }
@@ -944,7 +989,9 @@ async function runScan() {
     $('tel-block').textContent = block.toLocaleString('en-US');
     $('tel-pairs').textContent = `${pools.length} / ${state.pools.length}`;
     const byV = {}; pools.forEach(p => byV[p.venue] = (byV[p.venue] || 0) + 1);
-    $('tel-pairs-detail').textContent = Object.entries(byV).map(([k, n]) => `${k}:${n}`).join(' · ') + ' (live / discovered)';
+    const v3d = pools.filter(p => p.kind === 'v3' && p._tickDepth);
+    const depthTxt = v3d.length ? ` · v3 tick depth ${Math.min(...v3d.map(p => p._tickDepth))}–${Math.max(...v3d.map(p => p._tickDepth))} (cap ${$('in-tickdepth') ? $('in-tickdepth').value : 4})` : '';
+    $('tel-pairs-detail').textContent = Object.entries(byV).map(([k, n]) => `${k}:${n}`).join(' · ') + ' (live / discovered)' + depthTxt;
     $('tel-wpls').textContent = state.wpls ? '$' + state.wpls.price.toPrecision(4) : '—';
     $('tel-wpls-src').textContent = state.wpls ? 'source: ' + state.wpls.src : 'no stable pool';
     updateAge();
