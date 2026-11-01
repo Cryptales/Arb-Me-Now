@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.5)
+# Arb-Me-Now — Process Manual & White Paper (v4.6)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -55,6 +55,15 @@ For each route, the engine first finds the largest feasible input size by binary
 ### 3.6 Bridge price check (LibertySwap)
 `GET apis.libertyswap.finance/v3/swap/quote` gives the real quote from PulseChain to Ethereum (fee 0.5% for USDC and WETH from 369 → 1). The result is compared with the PulseChain purchase price and the Coinbase spot price. **This is not atomic:** the bridge takes minutes and you carry price risk while it runs. The API rate limit is 30 requests per 60 seconds and is enforced on the client.
 
+### 3.7 Atomic execution: ArbExecutor (v4.6)
+`contracts/src/ArbExecutor.sol` (Solidity 0.8.24, Foundry) runs a 2- to 4-leg closed cycle S → … → S in **one transaction**:
+- **Flash swap on leg 0:** the first pool sends its output first; the remaining legs run inside its callback; leg 0 is repaid in S at the end. No starting capital is needed.
+- **All-or-nothing:** if the cycle returns less than the amount owed it reverts `NoProfit(returned, required)`; it also reverts if the leftover is below `minProfit`. Only gas can be lost. Profit is sent to the owner.
+- **Callbacks (verified in on-chain bytecode):** PulseX v1/v2 `uniswapV2Call`, 9mm v2 `pancakeCall`, LibertySwap V3 `libertyV3SwapCallback` (`0x31e2ba55`).
+- **Safety:** owner-only `execute`/`withdraw`; callbacks accepted only from the pool currently being swapped while a run is active; deadline; token-continuity check; fee-on-transfer tokens unsupported.
+- **Leg encoding (uint256):** bits 0–159 pool · 160–167 kind (0 v2, 1 v3) · 168–175 zeroForOne · 176–191 v2 fee bps. Call: `execute(uint256[] legs, uint256 amountIn, uint256 minProfit, uint256 deadline)` (selector `0x29df2c6f`).
+- **Testing:** 11/11 Foundry tests on a PulseChain fork (live route reverts NoProfit; induced gaps profitable for v2→v2, v3-flash→v2, v2→v3 and a 3-hop; access control, stray callbacks, expiry, open cycles). A JS end-to-end test on an anvil fork drove the scanner's own encoder: contract profit matched the engine's prediction **exactly** for v2→v2 and within **2 wei** with a v3 leg, and a real execute tx paid the owner. Measured `execute` gas (Foundry report): median ≈ 294k, max ≈ 612k.
+
 ## 4. Operating Procedure (step by step)
 
 1. Open https://cryptales.github.io/Arb-Me-Now/.
@@ -69,7 +78,8 @@ For each route, the engine first finds the largest feasible input size by binary
    - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
    - Check the pool addresses on scan.pulsechain.com.
 7. **Alerts (v4.5):** tick **🔔 Alert on new profitable route** and allow browser notifications when asked. Pair it with **Auto-refresh every 15 s**. The scanner beeps, shows a banner and sends a notification **once** for each newly profitable route that is ≥ your min bps and still positive after gas (suspicious rows never alert). Alerts only work while the tab stays open.
-8. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
+8. **Execute (v4.6, optional):** deploy your own ArbExecutor once (`forge create src/ArbExecutor.sol:ArbExecutor --rpc-url https://rpc.pulsechain.com --private-key <your key> --broadcast`, run on your own machine). In Trade Companion, enter its address, keep or edit size and min profit (default 50% of expected), click **Build calldata**, then **Dry run** (an `eth_call` from the owner; nothing is signed). If it says "Would succeed", send the calldata from your owner wallet (value 0) before the 120 s deadline.
+9. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
 
 ## 5. Interpreting results
 
@@ -80,6 +90,7 @@ For each route, the engine first finds the largest feasible input size by binary
 | `net after gas` | Profit in USD minus the estimated gas cost (green = still profitable). |
 | `v3 multi-tick (≤N intervals)` | v3 legs are sized across up to N tick intervals; liquidity beyond that is not modelled. |
 | `v3 in-interval (conservative cap)` | Fallback when tick data could not be read: size limited to the current tick. |
+| `✅ Would succeed` / `❌ Would revert NoProfit` | ArbExecutor dry-run result at the latest block. |
 | 🔔 banner / notification | A new profitable, net-of-gas route ≥ min bps appeared (deduplicated per route). |
 | `3-hop triangular` | Triangular route. Only profitable ones are listed. |
 | Hidden: suspicious/dust | Thin or anomalous pools have been left out for your safety. |
@@ -90,6 +101,7 @@ For each route, the engine first finds the largest feasible input size by binary
 
 - Gas is an estimate (fixed gas units × live gas price). MEV and pending-block state are not modelled.
 - v3 depth is limited to 4 tick intervals per direction; deeper liquidity is not modelled.
+- ArbExecutor: a public-mempool tx can be front-run or the price can move after the dry run; then it reverts and gas is lost. The contract is unaudited; use small sizes first.
 - Alerts run in the browser only: the tab must stay open, and the browser or OS may block notifications or sound.
 - The results are a snapshot. By the time a transaction lands, reserves may have changed.
 - Bridge round-trips are non-atomic and carry price risk.
@@ -98,7 +110,7 @@ For each route, the engine first finds the largest feasible input size by binary
 
 ## 7. Security model
 
-The tool is read-only: it uses only `eth_call` and HTTPS GET requests. There is no wallet connection, no signing, no stored keys, no tracking and no backend. All code is in one auditable HTML file.
+The page is read-only: it uses only `eth_call` and HTTPS GET requests. Execution happens only if you send ArbExecutor calldata from your own wallet. There is no wallet connection, no signing, no stored keys, no tracking and no backend. All code is in one auditable HTML file.
 
 ## 8. Maintenance
 
@@ -109,10 +121,11 @@ The tool is read-only: it uses only `eth_call` and HTTPS GET requests. There is 
 
 ## 9. Roadmap
 
-An atomic execution contract (flash-swap) · server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
+Private/bundled submission (MEV protection) · in-page wallet signing (opt-in) · server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.6:** ArbExecutor atomic flash-swap contract (PulseX v1/v2, 9mm, LibertySwap V3; 2–4 legs), fork-tested; Trade Companion execution panel with calldata builder and read-only dry run.
 - **v4.5:** multi-tick LibertySwap V3 depth (up to 4 intervals per direction, same-block tick reads) and profitability alerts (sound + browser notification, deduplicated).
 - **v4.4:** triangular 3-hop routes, gas-adjusted net profit, separate route counts in the summary, and old pages redirected to the scanner.
 - **v4.3:** live Multicall3 reserves, verified fees, LibertySwap V3 and bridge quotes, and a BigInt engine.

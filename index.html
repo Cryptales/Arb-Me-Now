@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.5 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.6 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -267,8 +267,14 @@
         <li>The old cross-chain profit math mixed units. Bridge checks now compare USD values from an explicit reference price.</li>
         <li>New: LibertySwap V3 on-chain pools are included in the cycle scan, and pools with a gap above 50% or a capacity below $25 are hidden as suspicious/dust by default.</li>
       </ul></div>
+    <div class="docs-section"><h4>Atomic execution: ArbExecutor (v4.6)</h4>
+      <ul><li>An open-source flash-swap contract (<a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://github.com/Cryptales/Arb-Me-Now/tree/main/contracts">/contracts</a>) executes a 2- or 3-hop cycle in <b>one transaction</b>. Leg A is a flash swap (tokens out first, repaid at the end), so no starting capital is needed.</li>
+        <li>If the cycle returns less than input + your min profit, it reverts with <code>NoProfit</code>; only gas is lost. Only the deployer (owner) can call it; callbacks are accepted only from the pool currently being swapped.</li>
+        <li>Supported pools (callbacks verified on-chain): PulseX v1/v2 (<code>uniswapV2Call</code>), 9mm v2 (<code>pancakeCall</code>), LibertySwap V3 (<code>libertyV3SwapCallback</code>). Fee-on-transfer tokens are not supported.</li>
+        <li>In Trade Companion, enter your deployed address, then <b>Build calldata</b> and <b>Dry run</b>. The dry run is an <code>eth_call</code> from the owner, so nothing is signed or sent. Send the calldata from your owner wallet to execute.</li>
+        <li>Fork-tested on PulseChain: on an artificially created gap, the contract's profit matched the scanner's prediction exactly for v2→v2 and within 2 wei for a v3 leg. Live routes currently revert with <code>NoProfit</code>, as expected.</li></ul></div>
     <div class="docs-section"><h4>Limitations</h4>
-      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the multi-tick depth (up to 4 intervals) to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the 4 tick intervals read per direction. Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
+      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the multi-tick depth (up to 4 intervals) to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the 4 tick intervals read per direction. Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. The page itself never signs or sends transactions; execution happens only if you send the ArbExecutor calldata from your own wallet. MEV and price movement between dry run and execution can still make a transaction revert (gas lost). Verify on-chain before trading.</li></ul></div>
   </div>
 </div>
 <script>
@@ -734,6 +740,60 @@ function parseUnits(str, dec) {
 const symOf = addr => Object.keys(TOKENS).find(k => TOKENS[k].addr === addr) || addr.slice(0, 8);
 
 
+// ─── ArbExecutor (v4.6): atomic flash-swap execution contract helpers ────────
+// Leg packing must match contracts/src/ArbExecutor.sol:
+// bits 0-159 pool | 160-167 kind (0 v2, 1 v3) | 168-175 zeroForOne | 176-191 v2 fee (bps).
+const EXEC = { selExecute: '0x29df2c6f', selOwner: '0x8da5cb5b', errors: {
+  '0x31708d59': 'NoProfit', '0x30cd7471': 'NotOwner', '0x203d82d8': 'Expired', '0xc4c321d1': 'BadRoute',
+  '0x6c25f7f8': 'BadCallback', '0x3ef33375': 'Busy', '0x90b8ec18': 'TransferFailed' } };
+function packLeg(leg) {
+  const p = leg.pool;
+  const zf = leg.tokenIn.toLowerCase() === p.token0.toLowerCase() ? 1n : 0n;
+  const kind = p.kind === 'v3' ? 1n : 0n;
+  const fee = p.kind === 'v2' ? BigInt(p.feePpm) / 100n : 0n; // feePpm 2900 -> 29 bps
+  return BigInt(p.address) | (kind << 160n) | (zf << 168n) | (fee << 176n);
+}
+function encodeExecute(packedLegs, amountIn, minProfit, deadline) {
+  const w = x => BigInt(x).toString(16).padStart(64, '0');
+  return EXEC.selExecute + w(128) + w(amountIn) + w(minProfit) + w(deadline) + w(packedLegs.length) + packedLegs.map(w).join('');
+}
+// Read-only dry run: eth_call execute() from the contract owner. Never signs anything.
+async function rpcFull(method, params) { // like rpc(), but returns the raw JSON so revert data is kept
+  let lastErr;
+  for (const url of [activeRpc, ...RPCS.filter(u => u !== activeRpc)]) {
+    try {
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return await r.json();
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('all RPCs failed');
+}
+function decodeRevert(data) {
+  if (typeof data !== 'string' || data.length < 10) return { name: 'Revert', detail: 'no revert data' };
+  const sel = data.slice(0, 10).toLowerCase(), name = EXEC.errors[sel];
+  if (name === 'NoProfit') return { name, returned: BigInt('0x' + data.slice(10, 74)), required: BigInt('0x' + data.slice(74, 138)) };
+  if (sel === '0x08c379a0') { // Error(string)
+    const len = parseInt(data.slice(74, 138), 16); const hex = data.slice(138, 138 + len * 2);
+    return { name: 'Error', detail: decodeURIComponent(hex.replace(/(..)/g, '%$1')) };
+  }
+  return { name: name || 'Revert', detail: name ? '' : sel };
+}
+async function simulateExecute(executor, calldata) {
+  const o = await rpcFull('eth_call', [{ to: executor, data: EXEC.selOwner }, 'latest']);
+  if (o.error || !o.result || o.result.length < 66) throw new Error('not an ArbExecutor (owner() failed) at ' + executor);
+  const owner = '0x' + o.result.slice(26, 66);
+  const j = await rpcFull('eth_call', [{ from: owner, to: executor, data: calldata, gas: '0x' + (3000000).toString(16) }, 'latest']);
+  if (j.error) {
+    const data = typeof j.error.data === 'string' ? j.error.data : (j.error.data && j.error.data.data);
+    return { ok: false, owner, ...decodeRevert(data), message: j.error.message };
+  }
+  return { ok: true, owner, profit: BigInt(j.result.slice(0, 66)) };
+}
+function setRpcs(urls) { RPCS.splice(0, RPCS.length, ...urls); activeRpc = RPCS[0]; }
+
+
 // ─── Triangular scan: S → Y → Z → S across 3 pools ──────────────────────────
 // Returns rows sorted by profitability. Each row has legA (S→Y), legB (Y→Z), legC (Z→S).
 function scanTriangular(pools, startSym, userAmountRaw) {
@@ -1051,6 +1111,56 @@ function legDetail(leg, label) {
     <div class="detail-row"><span class="dk">Pool</span><span class="dv mono"><a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://scan.pulsechain.com/address/${p.address}">${short(p.address)}</a></span></div>${st}</div>`;
 }
 
+
+// ─── Execution panel (v4.6): ArbExecutor calldata + read-only dry run ───
+function execPanel(legs, res, S) {
+  const dS = TOKENS[S].dec;
+  const size = res && res.amountIn ? res.amountIn : null;
+  state.exec = { legs, S, size, expProfit: res && res.profit > 0n ? res.profit : 0n };
+  const saved = (typeof localStorage !== 'undefined' && localStorage.getItem('amn_executor')) || '';
+  return `<h2 class="section">⚡ Atomic execution (ArbExecutor flash-swap contract)</h2>
+  <div class="stat-card">
+    <div class="small" style="margin-bottom:8px">Leg A is flash-borrowed, so <b>no starting capital is needed</b>. The whole cycle runs in one transaction and reverts if it returns less than input + min profit, so only gas is at risk. This page never signs: it builds calldata and dry-runs it with <span class="mono">eth_call</span>. Deploy your own copy from <a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://github.com/Cryptales/Arb-Me-Now/tree/main/contracts">/contracts</a>.</div>
+    <div class="detail-row"><span class="dk">Your ArbExecutor address</span><span class="dv"><input id="ex-addr" class="mono" style="width:420px;max-width:100%" placeholder="0x… (deployed by you)" value="${saved}"></span></div>
+    <div class="detail-row"><span class="dk">Input size (${S})</span><span class="dv"><input id="ex-size" class="mono" style="width:180px" value="${size ? fmtUnits(size, dS, 6).replace(/,/g, '') : ''}"></span></div>
+    <div class="detail-row"><span class="dk">Min profit (${S}) — tx reverts below this</span><span class="dv"><input id="ex-min" class="mono" style="width:180px" value="${state.exec.expProfit > 0n ? fmtUnits(state.exec.expProfit / 2n, dS, 6).replace(/,/g, '') : '0'}"> <span class="small">default: 50% of expected</span></span></div>
+    <div class="detail-row"><span class="dk">Packed legs</span><span class="dv mono small" style="word-break:break-all">${legs.map(l => '0x' + packLeg(l).toString(16)).join('<br>')}</span></div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="primary" onclick="buildExec()">Build calldata</button><button class="primary" onclick="simExec()">Dry run (eth_call from owner)</button><button class="primary" onclick="copyExec()">Copy calldata</button></div>
+    <div id="ex-out" class="small" style="margin-top:10px"></div>
+    <pre id="ex-data" class="calc" style="display:none;word-break:break-all;white-space:pre-wrap"></pre>
+  </div>`;
+}
+function buildExec() {
+  const ex = state.exec; if (!ex) return null;
+  const dS = TOKENS[ex.S].dec, out = $('ex-out');
+  const size = parseUnits($('ex-size').value, dS), minP = parseUnits($('ex-min').value, dS);
+  if (size <= 0n) { out.innerHTML = '<span class="profit-negative">Enter an input size.</span>'; return null; }
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 120);
+  const data = encodeExecute(ex.legs.map(packLeg), size, minP, deadline);
+  $('ex-data').style.display = 'block';
+  $('ex-data').textContent = `to:       ${$('ex-addr').value.trim() || '(your ArbExecutor)'}\nvalue:    0\ndeadline: ${deadline} (now + 120 s)\ndata:     ${data}`;
+  out.innerHTML = 'Calldata built. Send it from the <b>owner</b> wallet to your ArbExecutor (value 0). Dry-run first; re-build if the deadline passes.';
+  ex.data = data; return data;
+}
+async function simExec() {
+  const out = $('ex-out'), addr = $('ex-addr').value.trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) { out.innerHTML = '<span class="profit-negative">Enter your deployed ArbExecutor address.</span>'; return; }
+  try { localStorage.setItem('amn_executor', addr); } catch (e) {}
+  const data = buildExec(); if (!data) return;
+  const dS = TOKENS[state.exec.S].dec, S = state.exec.S;
+  out.innerHTML = 'Dry-running at the latest block…';
+  try {
+    const r = await simulateExecute(addr, data);
+    if (r.ok) out.innerHTML = `<span class="profit-positive">✅ Would succeed: profit ${fmtUnits(r.profit, dS, 6)} ${S}</span> (before gas; owner ${short(r.owner)}). A real tx can still revert if the price moves first.`;
+    else if (r.name === 'NoProfit') out.innerHTML = `<span class="profit-negative">❌ Would revert NoProfit: returned ${fmtUnits(r.returned, dS, 6)} ${S}, needed ${fmtUnits(r.required, dS, 6)} ${S}.</span> Nothing would be lost except gas.`;
+    else out.innerHTML = `<span class="profit-negative">❌ Would revert: ${r.name} ${r.detail || ''}</span>`;
+  } catch (e) { out.innerHTML = `<span class="profit-negative">${e.message || e}</span>`; }
+}
+function copyExec() {
+  const data = buildExec(); if (!data) return;
+  if (navigator.clipboard) navigator.clipboard.writeText(data).then(() => { $('ex-out').innerHTML += ' <b>Copied.</b>'; });
+}
+
 function showCompanion(i) {
   const r = state.rows[i]; if (!r) return;
   if (r.kind === 'tri') { showTriCompanion(r); return; }
@@ -1069,7 +1179,8 @@ function showCompanion(i) {
 Cycle input cap (both legs within safe depth): ${r.opt ? fmtUnits(r.opt.cap, dS, 8) + ' ' + S : '—'}
 
 ${calc('Your size', r.user)}</pre>
-    <div class="small">Execution note: both legs must land in the same block (a contract or bundle) for the profit to hold. On v3, the size is limited to the tick intervals that were read (up to 4 per direction), so real capacity may be larger. Gas is not included.</div>`;
+    <div class="small">Execution note: both legs must land in one transaction for the profit to hold; use the ArbExecutor panel below. On v3, the size is limited to the tick intervals that were read (up to 4 per direction), so real capacity may be larger. Gas is not included above.</div>
+    ${execPanel([r.legA, r.legB], r.prof ? r.opt : r.user, S)}`;
   switchView('companion');
 }
 
@@ -1154,7 +1265,8 @@ function showTriCompanion(r) {
     <h2 class="section">Exact integer calculation</h2>
     <pre class="calc">${calcTri('Optimal size', o)}
 \n${calcTri('Your size', r.user)}</pre>
-    <div class="small">All three legs must land in the same transaction (e.g. via a flash-loan contract or a bundler). Gas is not included.</div>`;
+    <div class="small">All three legs must land in the same transaction; use the ArbExecutor panel below. Gas is not included above.</div>
+    ${execPanel([r.legA, r.legB, r.legC], o, S)}`;
   switchView('companion');
 }
 

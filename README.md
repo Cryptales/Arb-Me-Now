@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.5
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.6
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -54,7 +54,7 @@ All addresses and fees were verified on-chain against live contract data. See th
 - LibertySwap V3 depth is modelled across up to **4 tick intervals per direction** (v4.5); deeper liquidity is not modelled.
 - 🔔 Alerts run in the browser only — the tab must stay open.
 - Bridge checks are **non-atomic** — the cross-chain price comparison excludes gas, slippage, and bridge-crossing time. Quotes are informational only.
-- Nothing is signed or sent. This is analysis, not execution.
+- The page never signs or sends. Execution is opt-in via your own deployed ArbExecutor (see `contracts/`); unaudited, use small sizes.
 
 ---
 
@@ -70,6 +70,11 @@ All addresses and fees were verified on-chain against live contract data. See th
 ---
 
 ## Changelog
+
+### v4.6 (2026-11-01)
+- `contracts/src/ArbExecutor.sol`: atomic flash-swap executor (2–4 legs; PulseX v1/v2, 9mm v2, LibertySwap V3). Reverts `NoProfit` unless the cycle pays input + min profit. 11/11 fork tests pass; JS e2e shows contract profit = scanner prediction.
+- Trade Companion: execution panel (packed legs, calldata builder, read-only `eth_call` dry run from the owner).
+- White paper updated to v4.6.
 
 ### v4.5 (2026-11-01)
 - Multi-tick LibertySwap V3 depth: up to 4 tick intervals per direction, `ticks()` read in a second Multicall3 pinned to the same block (falls back to single-interval).
