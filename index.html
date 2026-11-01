@@ -865,7 +865,7 @@ function renderRows() {
     }).join('');
   }
   const nProf = state.rows.filter(r => r.prof && !r.suspicious).length;
-  $('results-summary').textContent = `Block ${state.block}: ${state.rows.length} two-pool cycles evaluated for ${S}; ${nProf} profitable before gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas is not deducted.`;
+  $('results-summary').textContent = `Block ${state.block}: ${state.rows.filter(r=>r.kind!=='tri').length} two-pool cycles evaluated + ${state.rows.filter(r=>r.kind==='tri').length} profitable triangular routes for ${S}; ${nProf} profitable before gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas is not deducted.`;
 }
 
 function legDetail(leg, label) {
