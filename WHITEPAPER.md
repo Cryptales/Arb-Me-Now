@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.6)
+# Arb-Me-Now — Process Manual & White Paper (v4.7)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -14,7 +14,7 @@ Arb-Me-Now finds price differences between decentralised exchanges (DEXs) on Pul
 |---|---|
 | Data | Public RPC `rpc.pulsechain.com`. All pool states are read in **one** Multicall3 `tryBlockAndAggregate` call (selector `0x399542e9`), so every price comes from the same block. PulseChain RPC rejects JSON-RPC batch requests, so Multicall3 is required. |
 | Tick data (v4.5) | A second Multicall3 call, pinned to the **same block**, reads `ticks(int24)` (selector `0xf30dba93`) for up to 4 initialised-boundary ticks on each side of every v3 pool, giving `liquidityNet` at each crossing. If this read fails, the engine falls back to single-interval maths. |
-| Discovery | `getPair` / `getPool` lookups on each factory for every pair of tokens in the watch list. |
+| Discovery | `getPair` / `getPool` lookups on each factory for a fixed list of liquid pairs over the watch list (v4.7: WPLS, PLSX, HEX, eHEX, INC, WETH, DAI and bridged stables; new pairs WPLS/eHEX, HEX/eHEX, eHEX/DAI, WPLS/INC, PLSX/INC, INC/HEX, WETH/DAI, WETH/PLSX, WETH/HEX). |
 | Engine | Pure BigInt maths (`engine.js`) with exact integer swap formulas and no floating-point rounding in the money path. It is unit-tested in Node (`test.js`). |
 | UI | A single self-contained `index.html` hosted on GitHub Pages, with no backend. |
 | External | LibertySwap quote API (bridge checks) and Coinbase spot (ETH/USD reference only). |
@@ -64,6 +64,9 @@ For each route, the engine first finds the largest feasible input size by binary
 - **Leg encoding (uint256):** bits 0–159 pool · 160–167 kind (0 v2, 1 v3) · 168–175 zeroForOne · 176–191 v2 fee bps. Call: `execute(uint256[] legs, uint256 amountIn, uint256 minProfit, uint256 deadline)` (selector `0x29df2c6f`).
 - **Testing:** 11/11 Foundry tests on a PulseChain fork (live route reverts NoProfit; induced gaps profitable for v2→v2, v3-flash→v2, v2→v3 and a 3-hop; access control, stray callbacks, expiry, open cycles). A JS end-to-end test on an anvil fork drove the scanner's own encoder: contract profit matched the engine's prediction **exactly** for v2→v2 and within **2 wei** with a v3 leg, and a real execute tx paid the owner. Measured `execute` gas (Foundry report): median ≈ 294k, max ≈ 612k.
 
+### 3.8 Wallet send (v4.7)
+Trade Companion's opt-in **Connect & Send** uses the injected EIP-1193 wallet (MetaMask): `eth_requestAccounts` → `wallet_switchEthereumChain` to `0x171` (369) → `owner()` read on the executor; sending is blocked unless the connected account is the owner → `eth_sendTransaction` with the built `execute(...)` calldata → the tx hash is shown with an explorer link. Keys never leave the wallet.
+
 ## 4. Operating Procedure (step by step)
 
 1. Open https://cryptales.github.io/Arb-Me-Now/.
@@ -110,7 +113,7 @@ For each route, the engine first finds the largest feasible input size by binary
 
 ## 7. Security model
 
-The page is read-only: it uses only `eth_call` and HTTPS GET requests. Execution happens only if you send ArbExecutor calldata from your own wallet. There is no wallet connection, no signing, no stored keys, no tracking and no backend. All code is in one auditable HTML file.
+By default the page is read-only: it uses only `eth_call` and HTTPS GET requests. Since v4.7 there is an **opt-in** wallet connection: a transaction is sent only when you click Connect & Send *and* approve it in your wallet, and only from the executor owner. The page never sees or stores private keys; there is no tracking and no backend. All code is in one auditable HTML file.
 
 ## 8. Maintenance
 
@@ -121,10 +124,11 @@ The page is read-only: it uses only `eth_call` and HTTPS GET requests. Execution
 
 ## 9. Roadmap
 
-Private/bundled submission (MEV protection) · in-page wallet signing (opt-in) · server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
+v4.8 adaptive tick depth · v4.9 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.7:** New tokens eHEX, INC (and WETH pairs) with 9 liquid pairs; opt-in MetaMask Connect & Send (chain switch, owner check, wallet-signed tx).
 - **v4.6.1:** Fixed stale browser tab title (v4.3 → v4.6); white paper PDF regenerated.
 - **v4.6:** ArbExecutor atomic flash-swap contract (PulseX v1/v2, 9mm, LibertySwap V3; 2–4 legs), fork-tested; Trade Companion execution panel with calldata builder and read-only dry run.
 - **v4.5:** multi-tick LibertySwap V3 depth (up to 4 intervals per direction, same-block tick reads) and profitability alerts (sound + browser notification, deduplicated).

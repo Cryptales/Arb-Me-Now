@@ -71,6 +71,11 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Changelog
 
+### v4.7 (2026-11-01)
+- New tokens: eHEX (bridged HEX), INC, plus WETH pairs — 9 new liquid pairs (WPLS/eHEX, HEX/eHEX, eHEX/DAI, WPLS/INC, PLSX/INC, INC/HEX, WETH/DAI, WETH/PLSX, WETH/HEX), verified on-chain.
+- Trade Companion: opt-in 🦊 Connect & Send — switches MetaMask to PulseChain, checks executor `owner()`, sends the built calldata via the wallet, shows tx hash + explorer link. Keys never touch the page.
+- White paper v4.7 (§2 discovery, new §3.8 wallet send, §7 security model, roadmap, history) + PDF regenerated.
+
 ### v4.6.1 (2026-11-01)
 - Fixed stale browser tab title (was "v4.3", now correctly "v4.6").
 - White paper PDF regenerated with the v4.6.1 history entry.
