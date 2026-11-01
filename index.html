@@ -262,7 +262,7 @@
         <li>New: LibertySwap V3 on-chain pools are included in the cycle scan, and pools with a gap above 50% or a capacity below $25 are hidden as suspicious/dust by default.</li>
       </ul></div>
     <div class="docs-section"><h4>Limitations</h4>
-      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the current tick interval to v3 legs, and lists only profitable routes. Gas, MEV and pending-block state are not modelled. v3 is limited to the current tick interval. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
+      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the current tick interval to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 is limited to the current tick interval. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
   </div>
 </div>
 <script>
@@ -709,6 +709,7 @@ function scanTriangular(pools, startSym, userAmountRaw) {
   return rows;
 }
 
+const GAS_UNITS_2HOP = 250000, GAS_UNITS_3HOP = 350000; // estimated gas for an atomic 2-/3-swap tx
 
 // ═════════════════════════════ UI layer ═════════════════════════════
 const $ = id => document.getElementById(id);
@@ -772,6 +773,8 @@ async function runScan() {
     const { block, pools } = await fetchPoolStates(state.pools);
     state.block = block; state.live = pools; state.snapAt = Date.now();
     state.wpls = wplsUsd(pools);
+    try { state.gasPrice = BigInt(await rpc('eth_gasPrice', [])); } catch (e) { state.gasPrice = null; }
+    state.gasUsd = (units) => (state.gasPrice != null && state.wpls) ? Number(state.gasPrice * BigInt(units)) / 1e18 * state.wpls.price : null;
     $('tel-rpc').innerHTML = badge('healthy', 'OK');
     $('tel-rpc-latency').textContent = `${rpc.lastLatency} ms · ${activeRpc.replace('https://', '')}`;
     $('tel-block').textContent = block.toLocaleString('en-US');
@@ -793,7 +796,9 @@ async function runScan() {
       const prof = r.opt && !r.opt.unprofitable && r.opt.profit > 0n;
       const profUsd = prof && usdS != null ? toFloat(r.opt.profit, dec) * usdS : (prof ? null : 0);
       const bps = prof && r.opt.amountIn > 0n ? Number(r.opt.profit * 1000000n / r.opt.amountIn) / 100 : null;
-      return { ...r, capA, capB, dust, wild, suspicious: dust || wild, prof, profUsd, bps };
+      const gasUsd = state.gasUsd(GAS_UNITS_2HOP);
+      const netUsd = prof && profUsd != null && gasUsd != null ? profUsd - gasUsd : null;
+      return { ...r, capA, capB, dust, wild, suspicious: dust || wild, prof, profUsd, bps, gasUsd, netUsd };
     });
     rows.sort((a, b) => (b.prof ? (b.profUsd ?? 0) + 1e-12 : -1 + b.midEdge / 1e3) - (a.prof ? (a.profUsd ?? 0) + 1e-12 : -1 + a.midEdge / 1e3));
     const triRaw = doTri ? scanTriangular(pools, S, userRaw) : [];
@@ -801,7 +806,9 @@ async function runScan() {
       const prof = r.opt && r.opt.profit > 0n;
       const profUsd = prof && usdS != null ? toFloat(r.opt.profit, dec) * usdS : 0;
       const bps = prof && r.opt.amountIn > 0n ? Number(r.opt.profit * 1000000n / r.opt.amountIn) / 100 : null;
-      return { ...r, prof, profUsd, bps, suspicious: false, dust: false, wild: false };
+      const gasUsd = state.gasUsd(GAS_UNITS_3HOP);
+      const netUsd = prof && gasUsd != null ? profUsd - gasUsd : null;
+      return { ...r, prof, profUsd, bps, gasUsd, netUsd, suspicious: false, dust: false, wild: false };
     });
     state.rows = [...rows, ...triRows];
     if (triRows.length) state.rows.sort((a, b) => (b.prof ? (b.profUsd ?? 0) : -1) - (a.prof ? (a.profUsd ?? 0) : -1));
@@ -858,14 +865,17 @@ function renderRows() {
         <td>${routeCell}</td>
         <td class="mono ${r.midEdge > 0 ? 'profit-positive' : 'profit-negative'}">${fmtPct(r.midEdge)}</td>
         <td>${optCell}</td>
-        <td class="mono">${r.prof ? fmtUsd(r.profUsd) : '—'}</td>
+        <td class="mono">${r.prof ? fmtUsd(r.profUsd) + `<div class="small" style="color:${r.netUsd != null && r.netUsd > 0 ? 'var(--accent-green, #3fb950)' : 'var(--accent-red, #f85149)'}">net after gas: ${r.netUsd != null ? fmtUsd(r.netUsd) : 'n/a'}</div>` : '—'}</td>
         <td>${userCell}</td>
         <td>${flags.join('')}</td>
         <td><button class="sm" onclick="showCompanion(${idx})">Inspect</button></td></tr>`;
     }).join('');
   }
   const nProf = state.rows.filter(r => r.prof && !r.suspicious).length;
-  $('results-summary').textContent = `Block ${state.block}: ${state.rows.filter(r=>r.kind!=='tri').length} two-pool cycles evaluated + ${state.rows.filter(r=>r.kind==='tri').length} profitable triangular routes for ${S}; ${nProf} profitable before gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas is not deducted.`;
+  const nNet = state.rows.filter(r => r.prof && !r.suspicious && r.netUsd != null && r.netUsd > 0).length;
+  const g2 = state.gasUsd ? state.gasUsd(GAS_UNITS_2HOP) : null, g3 = state.gasUsd ? state.gasUsd(GAS_UNITS_3HOP) : null;
+  const gp = state.gasPrice != null ? (Number(state.gasPrice) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' gwei' : 'unavailable';
+  $('results-summary').textContent = `Block ${state.block}: ${state.rows.filter(r=>r.kind!=='tri').length} two-pool cycles evaluated + ${state.rows.filter(r=>r.kind==='tri').length} profitable triangular routes for ${S}; ${nProf} profitable before gas, ${nNet} after estimated gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas estimate: ${gp}; 2-hop ≈ ${g2 != null ? fmtUsd(g2) : 'n/a'} (${GAS_UNITS_2HOP.toLocaleString('en-US')} gas), 3-hop ≈ ${g3 != null ? fmtUsd(g3) : 'n/a'} (${GAS_UNITS_3HOP.toLocaleString('en-US')} gas).`;
 }
 
 function legDetail(leg, label) {
