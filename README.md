@@ -71,6 +71,10 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Changelog
 
+### v4.6.1 (2026-11-01)
+- Fixed stale browser tab title (was "v4.3", now correctly "v4.6").
+- Added `arb_build/build.py`: `python3 build.py` assembles head + body + scripts into `index.html`.
+
 ### v4.6 (2026-11-01)
 - `contracts/src/ArbExecutor.sol`: atomic flash-swap executor (2–4 legs; PulseX v1/v2, 9mm v2, LibertySwap V3). Reverts `NoProfit` unless the cycle pays input + min profit. 11/11 fork tests pass; JS e2e shows contract profit = scanner prediction.
 - Trade Companion: execution panel (packed legs, calldata builder, read-only `eth_call` dry run from the owner).
