@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.3 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.4 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -175,6 +175,7 @@
         <label><input type="checkbox" id="v-ninemm_v2" checked> 9mm v2 (0.25%)</label>
         <label><input type="checkbox" id="v-liberty_v3" checked> LibertySwap V3 pools</label>
         <label><input type="checkbox" id="v-bridge" checked> LibertySwap bridge quotes</label>
+        <label><input type="checkbox" id="v-tri" checked> Triangular 3-hop routes</label>
       </div>
       <div class="toggle-group">
         <label><input type="checkbox" id="opt-profitable"> Only rows ≥ min profit</label>
@@ -261,7 +262,7 @@
         <li>New: LibertySwap V3 on-chain pools are included in the cycle scan, and pools with a gap above 50% or a capacity below $25 are hidden as suspicious/dust by default.</li>
       </ul></div>
     <div class="docs-section"><h4>Limitations</h4>
-      <ul><li>Only 2-pool cycles are checked (no triangular routes). Gas, MEV and pending-block state are not modelled. v3 is limited to the current tick interval. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
+      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the current tick interval to v3 legs, and lists only profitable routes. Gas, MEV and pending-block state are not modelled. v3 is limited to the current tick interval. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
   </div>
 </div>
 <script>
@@ -637,6 +638,78 @@ function parseUnits(str, dec) {
 const symOf = addr => Object.keys(TOKENS).find(k => TOKENS[k].addr === addr) || addr.slice(0, 8);
 
 
+// ─── Triangular scan: S → Y → Z → S across 3 pools ──────────────────────────
+// Returns rows sorted by profitability. Each row has legA (S→Y), legB (Y→Z), legC (Z→S).
+function scanTriangular(pools, startSym, userAmountRaw) {
+  const S = TOKENS[startSym].addr;
+  // Build adjacency: for each token pair, list of pools
+  const adj = {}; // adj[tokenA][tokenB] = [pool, ...]
+  const addEdge = (from, to, pool) => { (adj[from] = adj[from] || {}); (adj[from][to] = adj[from][to] || []).push(pool); };
+  for (const p of pools) { addEdge(p.token0, p.token1, p); addEdge(p.token1, p.token0, p); }
+  const rows = [];
+  // S → Y pools
+  if (!adj[S]) return rows;
+  for (const [Y, poolsSY] of Object.entries(adj[S])) {
+    if (Y === S) continue;
+    if (!adj[Y]) continue;
+    // Y → Z pools (Z ≠ S, Z ≠ Y)
+    for (const [Z, poolsYZ] of Object.entries(adj[Y])) {
+      if (Z === S || Z === Y) continue;
+      // Z → S pools
+      if (!adj[Z] || !adj[Z][S]) continue;
+      const poolsZS = adj[Z][S];
+      for (const pa of poolsSY) for (const pb of poolsYZ) for (const pc of poolsZS) {
+        if (pa === pb || pb === pc || pa === pc) continue;
+        const legA = makeLeg(pa, S);
+        const legB = makeLeg(pb, Y);
+        const legC = makeLeg(pc, Z);
+        // find optimal: binary search for feasible max, ternary on profit
+        const xmax = (() => {
+          let lo = 0n, hi = legA.maxIn;
+          if (hi === 0n) return 0n;
+          const ok = x => {
+            const oA = legA.quote(x); if (oA === null || oA === 0n || oA > legB.maxIn) return false;
+            const oB = legB.quote(oA); if (oB === null || oB === 0n || oB > legC.maxIn) return false;
+            return true;
+          };
+          if (!ok(hi)) { for (let i = 0; i < 200 && hi - lo > 1n; i++) { const m = (lo + hi) / 2n; if (ok(m)) lo = m; else hi = m; } }
+          return lo;
+        })();
+        if (xmax <= 0n) continue;
+        const profit3 = x => {
+          const oA = legA.quote(x); if (oA === null || oA > legB.maxIn) return -(1n << 200n);
+          const oB = legB.quote(oA); if (oB === null || oB > legC.maxIn) return -(1n << 200n);
+          const oC = legC.quote(oB); if (oC === null) return -(1n << 200n);
+          return oC - x;
+        };
+        let lo = 0n, hi = xmax;
+        for (let i = 0; i < 200 && hi - lo > 2n; i++) {
+          const m1 = lo + (hi - lo) / 3n, m2 = hi - (hi - lo) / 3n;
+          if (profit3(m1) < profit3(m2)) lo = m1; else hi = m2;
+        }
+        let opt = null;
+        for (let x = lo; x <= hi; x++) {
+          const pr = profit3(x); if (pr > (opt ? opt.profit : -(1n << 200n))) {
+            const oA = legA.quote(x), oB = oA && legB.quote(oA), oC = oB && legC.quote(oB);
+            if (oC !== null) opt = { amountIn: x, midAB: oA, midBC: oB, amountOut: oC, profit: pr, cap: xmax };
+          }
+        }
+        if (!opt || opt.profit <= 0n) continue; // skip unprofitable for tri
+        const midEdge = midRaw(legA) * midRaw(legB) * midRaw(legC) - 1;
+        let user = null, userExceedsCap = false;
+        if (userAmountRaw > 0n) {
+          const p3 = profit3(userAmountRaw);
+          if (p3 > -(1n << 200n)) { const oA = legA.quote(userAmountRaw), oB = oA && legB.quote(oA), oC = oB && legC.quote(oB); if (oC !== null) user = { amountIn: userAmountRaw, midAB: oA, midBC: oB, amountOut: oC, profit: p3 }; }
+          else userExceedsCap = true;
+        }
+        rows.push({ kind: 'tri', startSym, midSymY: symOf(Y), midSymZ: symOf(Z), legA, legB, legC, opt, user, midEdge, userExceedsCap });
+      }
+    }
+  }
+  return rows;
+}
+
+
 // ═════════════════════════════ UI layer ═════════════════════════════
 const $ = id => document.getElementById(id);
 const STALE_MS = 20000;
@@ -710,6 +783,7 @@ async function runScan() {
     updateAge();
 
     const S = $('in-start').value, dec = TOKENS[S].dec;
+    const doTri = $('v-tri') && $('v-tri').checked;
     const userRaw = parseUnits($('in-size').value, dec);
     const usdS = tokenUsd(S, pools, state.wpls);
     const rows = scanCycles(pools, S, userRaw).map(r => {
@@ -722,7 +796,15 @@ async function runScan() {
       return { ...r, capA, capB, dust, wild, suspicious: dust || wild, prof, profUsd, bps };
     });
     rows.sort((a, b) => (b.prof ? (b.profUsd ?? 0) + 1e-12 : -1 + b.midEdge / 1e3) - (a.prof ? (a.profUsd ?? 0) + 1e-12 : -1 + a.midEdge / 1e3));
-    state.rows = rows;
+    const triRaw = doTri ? scanTriangular(pools, S, userRaw) : [];
+    const triRows = triRaw.map(r => {
+      const prof = r.opt && r.opt.profit > 0n;
+      const profUsd = prof && usdS != null ? toFloat(r.opt.profit, dec) * usdS : 0;
+      const bps = prof && r.opt.amountIn > 0n ? Number(r.opt.profit * 1000000n / r.opt.amountIn) / 100 : null;
+      return { ...r, prof, profUsd, bps, suspicious: false, dust: false, wild: false };
+    });
+    state.rows = [...rows, ...triRows];
+    if (triRows.length) state.rows.sort((a, b) => (b.prof ? (b.profUsd ?? 0) : -1) - (a.prof ? (a.profUsd ?? 0) : -1));
     renderRows();
     if ($('v-bridge').checked && !state.bridgeDone) { state.bridgeDone = true; runBridge(); }
   } catch (e) {
@@ -747,8 +829,15 @@ function renderRows() {
   } else {
     tb.innerHTML = vis.map((r, i) => {
       const idx = state.rows.indexOf(r);
-      const Y = symOf(r.otherAddr);
+      const Y = r.otherAddr ? symOf(r.otherAddr) : '';
       const o = r.opt;
+      const isTri = r.kind === 'tri';
+      const cycleCell = isTri
+        ? `<span class="mono">${r.startSym} → ${r.midSymY} → ${r.midSymZ} → ${r.startSym}</span>`
+        : `<span class="mono">${S} → ${Y} → ${S}</span>`;
+      const routeCell = isTri
+        ? `<span class="route-tag tag-amm">${r.legA.pool.label}</span> → <span class="route-tag tag-amm">${r.legB.pool.label}</span> → <span class="route-tag tag-amm">${r.legC.pool.label}</span>`
+        : `<span class="route-tag ${r.legA.pool.kind === 'v3' ? 'tag-liberty' : 'tag-amm'}">${r.legA.pool.label}</span> → <span class="route-tag ${r.legB.pool.kind === 'v3' ? 'tag-liberty' : 'tag-amm'}">${r.legB.pool.label}</span>`;
       const optCell = !r.prof ? `<span class="small">${o && o.cap > 0n ? 'not profitable at any size' : 'no feasible size'}</span>`
         : o && o.amountIn !== undefined && o.amountIn > 0n
         ? `<span class="mono">${fmtUnits(o.amountIn, dec, 4)} ${S}</span><br><span class="mono ${r.prof ? 'profit-positive' : 'profit-negative'}">${r.prof ? '+' : ''}${fmtUnits(o.profit, dec, 6)} ${S}</span>${r.bps != null ? ` <span class="small">(${r.bps.toFixed(2)} bps)</span>` : ''}`
@@ -758,14 +847,15 @@ function renderRows() {
       else if (r.userExceedsCap) userCell = '<span class="profit-marginal">exceeds safe depth</span>';
       else userCell = '—';
       const flags = [];
-      if (r.legA.pool.kind === 'v3' || r.legB.pool.kind === 'v3') flags.push('<span class="flag flag-v3">v3 in-interval (conservative cap)</span>');
+      if (!isTri && (r.legA.pool.kind === 'v3' || r.legB.pool.kind === 'v3')) flags.push('<span class="flag flag-v3">v3 in-interval (conservative cap)</span>');
+      if (isTri) flags.push('<span class="flag flag-v3">3-hop triangular</span>');
       if (r.wild) flags.push('<span class="flag flag-sus">gap &gt;50% – broken/mispriced pool</span>');
       if (r.dust) flags.push('<span class="flag flag-sus">dust depth</span>');
       if (r.prof && r.bps >= minBps && !r.suspicious) flags.push('<span class="flag flag-ok">candidate</span>');
       return `<tr>
         <td>${i + 1}</td>
-        <td class="mono">${S} → ${Y} → ${S}</td>
-        <td><span class="route-tag ${r.legA.pool.kind === 'v3' ? 'tag-liberty' : 'tag-amm'}">${r.legA.pool.label}</span> → <span class="route-tag ${r.legB.pool.kind === 'v3' ? 'tag-liberty' : 'tag-amm'}">${r.legB.pool.label}</span></td>
+        <td>${cycleCell}</td>
+        <td>${routeCell}</td>
         <td class="mono ${r.midEdge > 0 ? 'profit-positive' : 'profit-negative'}">${fmtPct(r.midEdge)}</td>
         <td>${optCell}</td>
         <td class="mono">${r.prof ? fmtUsd(r.profUsd) : '—'}</td>
@@ -800,6 +890,7 @@ function legDetail(leg, label) {
 
 function showCompanion(i) {
   const r = state.rows[i]; if (!r) return;
+  if (r.kind === 'tri') { showTriCompanion(r); return; }
   const S = r.startSym, Y = symOf(r.otherAddr), dS = TOKENS[S].dec, dY = TOKENS[Y].dec;
   const calc = (label, res) => res ? `${label}
   in        ${fmtUnits(res.amountIn, dS, 8)} ${S}
@@ -881,6 +972,27 @@ async function runBridge() {
   }
   tb.innerHTML = out.join('');
   btn.disabled = false;
+}
+
+function showTriCompanion(r) {
+  const S = r.startSym, Y = r.midSymY, Z = r.midSymZ;
+  const dS = TOKENS[S].dec, dY = TOKENS[Y] ? TOKENS[Y].dec : 18, dZ = TOKENS[Z] ? TOKENS[Z].dec : 18;
+  const o = r.opt;
+  const calcTri = (label, res) => res ? `${label}
+  in           ${fmtUnits(res.amountIn, dS, 8)} ${S}
+  after leg A  ${fmtUnits(res.midAB, dY, 8)} ${Y}
+  after leg B  ${fmtUnits(res.midBC, dZ, 8)} ${Z}
+  returned     ${fmtUnits(res.amountOut, dS, 8)} ${S}
+  profit       ${fmtUnits(res.profit, dS, 8)} ${S}  (before gas)` : `${label}\n  not feasible within safe depth`;
+  $('companion-body').className = '';
+  $('companion-body').innerHTML = `
+    <div class="alert-box alert-info">3-hop triangular route: ${S} → ${Y} → ${Z} → ${S}. Snapshot block ${state.block}. Mid gap ${fmtPct(r.midEdge)}.</div>
+    <div class="companion-grid">${legDetail(r.legA, 'Leg A: ' + S + ' → ' + Y)}${legDetail(r.legB, 'Leg B: ' + Y + ' → ' + Z)}${legDetail(r.legC, 'Leg C: ' + Z + ' → ' + S)}</div>
+    <h2 class="section">Exact integer calculation</h2>
+    <pre class="calc">${calcTri('Optimal size', o)}
+\n${calcTri('Your size', r.user)}</pre>
+    <div class="small">All three legs must land in the same transaction (e.g. via a flash-loan contract or a bundler). Gas is not included.</div>`;
+  switchView('companion');
 }
 
 function setAuto() {
