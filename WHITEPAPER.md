@@ -1,0 +1,110 @@
+# Arb-Me-Now — Process Manual & White Paper (v4.4)
+
+*PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
+
+---
+
+## 1. Purpose
+
+Arb-Me-Now finds price differences between decentralised exchanges (DEXs) on PulseChain and tells you whether a round-trip trade would make money **after DEX fees**. It reads live pool data straight from the chain, so all numbers come from a single block. It never signs or sends transactions, and it never asks for a wallet or private key.
+
+## 2. Architecture
+
+| Layer | What it does |
+|---|---|
+| Data | Public RPC `rpc.pulsechain.com`. All pool states are read in **one** Multicall3 `tryBlockAndAggregate` call (selector `0x399542e9`), so every price comes from the same block. PulseChain RPC rejects JSON-RPC batch requests, so Multicall3 is required. |
+| Discovery | `getPair` / `getPool` lookups on each factory for every pair of tokens in the watch list. |
+| Engine | Pure BigInt maths (`engine.js`) with exact integer swap formulas and no floating-point rounding in the money path. It is unit-tested in Node (`test.js`). |
+| UI | A single self-contained `index.html` hosted on GitHub Pages, with no backend. |
+| External | LibertySwap quote API (bridge checks) and Coinbase spot (ETH/USD reference only). |
+
+### Venues and verified fees
+
+| Venue | Factory | Fee |
+|---|---|---|
+| PulseX v1 | `0x1715a3E4A142d8b698131108995174F37aEBA10D` | 0.29% |
+| PulseX v2 | `0x29eA7545DEf87022BAdc76323F373EA1e707C523` | 0.29% |
+| 9mm v2 | `0x3a0Fa7884dD93f3cd234bBE2A0958Ef04b05E13b` | 0.25% |
+| LibertySwap V3 | `0x796fcbDC956b85797EFe21145Aa97599B7FB36a6` | 0.01 / 0.05 / 0.25 / 1% tiers |
+
+All fees were checked on-chain, not taken from documentation.
+
+## 3. Methodology
+
+### 3.1 Swap maths
+- **v2 (constant product):** `out = in·(10000−fee)·R_out / (R_in·10000 + in·(10000−fee))`, using integer division the same way the pool contract does.
+- **v3 (concentrated liquidity):** exact swap within the **current tick interval** only, using `sqrtPriceX96` and active liquidity `L`. If a trade would cross into the next tick, it is treated as infeasible. This is deliberately conservative.
+
+### 3.2 Safe-depth caps
+- A v2 leg may use at most **10% of the input reserve**.
+- A v3 leg may not move the price beyond the current tick interval.
+
+### 3.3 Route types
+1. **Two-pool cycles:** S → Y on pool A, then Y → S on pool B, where A and B are different pools for the same pair.
+2. **Triangular 3-hop routes (v4.4):** S → Y → Z → S across three different pools.
+
+### 3.4 Optimal sizing
+For each route, the engine first finds the largest feasible input size by binary search. It then runs a ternary search for the size with the highest profit, which works because profit rises and then falls as size grows. Finally it checks every size in the last narrow window exhaustively. It also evaluates the size you typed in, so you can compare your size with the best one.
+
+### 3.5 Filtering and pricing
+- **Suspicious/dust:** routes where any leg has under the dust threshold in USD depth, or an implausibly large price gap, are hidden by default.
+- **USD values:** WPLS/USD comes from the deepest WPLS/stablecoin pool, treating bridged stables as $1. Other tokens are priced through their deepest WPLS pool.
+- **Snapshot age:** data is marked stale after 20 seconds.
+
+### 3.6 Bridge price check (LibertySwap)
+`GET apis.libertyswap.finance/v3/swap/quote` gives the real quote from PulseChain to Ethereum (fee 0.5% for USDC and WETH from 369 → 1). The result is compared with the PulseChain purchase price and the Coinbase spot price. **This is not atomic:** the bridge takes minutes and you carry price risk while it runs. The API rate limit is 30 requests per 60 seconds and is enforced on the client.
+
+## 4. Operating Procedure (step by step)
+
+1. Open https://cryptales.github.io/Arb-Me-Now/.
+2. Under **Settings**, choose the start token and the trade size, and turn venues on or off. The *LibertySwap bridge quotes* and *Triangular 3-hop routes* toggles are on by default.
+3. Click **Scan**. Check the telemetry bar: RPC is **OK**, the snapshot block is shown, and the snapshot age is under 20 s.
+4. Read the results table, which is sorted by profit in USD. Each row shows the route, venues, mid-price gap, best size, profit at the best size, profit at your size, and flags.
+5. Click **Inspect** to open the Trade Companion. It shows reserves or v3 state for every leg, the depth caps, and the exact BigInt calculation.
+6. **Before acting on any row:**
+   - Re-scan to confirm the opportunity is still there in a fresh block.
+   - Subtract the gas cost for 2 or 3 swaps; it is **not** deducted in the table.
+   - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
+   - Check the pool addresses on scan.pulsechain.com.
+7. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
+
+## 5. Interpreting results
+
+| Display | Meaning |
+|---|---|
+| `not profitable at any size` | Fees are larger than the price gap at every size. |
+| `+x TOKEN` profit | Gross profit at the optimal size, before gas. |
+| `v3 in-interval (conservative cap)` | Size is limited by the current tick, so the real depth may be larger. |
+| `3-hop triangular` | Triangular route. Only profitable ones are listed. |
+| Hidden: suspicious/dust | Thin or anomalous pools have been left out for your safety. |
+
+**Live findings (1 Nov 2026, block ~27.94M):** no profitable two-pool or triangular routes after DEX fees. The best gross gap was 0.22% (WPLS–WETH, PulseX v2 → LibertySwap V3 0.25%), which is below the combined 0.54% in fees. The WETH bridge check showed about +0.17% to +0.30% against Coinbase before gas and slippage. Efficient markets tend to close these gaps fast, so the tool is most useful during volatility.
+
+## 6. Risks and limitations
+
+- Gas, MEV and pending-block state are not modelled.
+- v3 sizing is limited to the current tick, with no multi-tick crossing.
+- The results are a snapshot. By the time a transaction lands, reserves may have changed.
+- Bridge round-trips are non-atomic and carry price risk.
+- The public RPC can lag or rate-limit you.
+- **This is analysis, not financial advice. Always verify on-chain before trading.**
+
+## 7. Security model
+
+The tool is read-only: it uses only `eth_call` and HTTPS GET requests. There is no wallet connection, no signing, no stored keys, no tracking and no backend. All code is in one auditable HTML file.
+
+## 8. Maintenance
+
+- **Source files:** `engine.js` (engine), `ui.js` (UI logic), `body.html` (markup) and `test.js` (Node tests: `node test.js`).
+- **Build:** the CSS + `body.html` + `engine.js` (without module exports) + `ui.js` are combined into one `index.html`.
+- **Deploy:** commit `index.html` to `main`. GitHub Pages serves it within about a minute.
+- **When fees or factories change:** re-verify on-chain and update the constants in `engine.js`.
+
+## 9. Roadmap
+
+Gas-adjusted net profit · multi-tick v3 crossing · an atomic execution contract (flash-swap) · alerting · more venues and tokens.
+
+## 10. Version history
+
+- **v4.4:** triangular 3-hop routes, separate route counts in the summary, and old pages redirected to the scanner.
+- **v4.3:** live Multicall3 reserves, verified fees, LibertySwap V3 and bridge quotes, and a BigInt engine.
