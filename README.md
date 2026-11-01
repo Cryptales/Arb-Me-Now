@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.3
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.4
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -46,7 +46,7 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Limitations
 
-- Only **2-pool round trips** are checked (no triangular routes yet).
+- **2-pool round trips** and **triangular 3-hop routes** (S → Y → Z → S over three distinct pools) are checked. Triangular legs use the 10% reserve cap (v2) and the current tick interval (v3); only profitable triangular routes are listed.
 - Gas is **not deducted** from the profit figures.
 - LibertySwap V3 sizes are limited to the **current tick interval** (conservative).
 - Bridge checks are **non-atomic** — the cross-chain price comparison excludes gas, slippage, and bridge-crossing time. Quotes are informational only.
@@ -66,6 +66,9 @@ All addresses and fees were verified on-chain against live contract data. See th
 ---
 
 ## Changelog
+
+### v4.4 (2026-11-01)
+- Added triangular 3-hop route search (toggle in Settings), with optimal sizing and a three-leg Trade Companion view.
 
 ### v4.3 (2026-11-01)
 - Live Multicall3 reserves: all pools read at a single block.
