@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.4 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.5 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -181,7 +181,9 @@
         <label><input type="checkbox" id="opt-profitable"> Only rows ≥ min profit</label>
         <label><input type="checkbox" id="opt-suspicious"> Show suspicious / dust pools</label>
         <label><input type="checkbox" id="opt-auto"> Auto-refresh every 15 s</label>
+        <label><input type="checkbox" id="v-alert" onchange="onAlertToggle()"> 🔔 Alert on new profitable route (sound + notification)</label>
       </div>
+      <div class="small" id="alert-status" style="margin:-4px 0 8px;color:var(--text-muted,#8b949e)"></div>
       <button class="primary" id="btn-scan" onclick="runScan()">Scan now</button>
     </div>
 
@@ -246,7 +248,7 @@
     <div class="docs-section"><h4>Math</h4>
       <ul>
         <li>v2: <code>out = in·(1e6−fee)·rOut / (rIn·1e6 + in·(1e6−fee))</code>, in integers (fee in ppm). The input size is capped at 10% of the input reserve.</li>
-        <li>v3: exact Uniswap-v3 swap math (full TickMath port, <code>getAmount0Delta/getAmount1Delta</code> rounding), <b>restricted to the current initialized-tick interval</b>. A swap that would cross a tick boundary is rejected, not approximated. As a result, v3 sizes are conservative (flag “v3 in-interval”) and real capacity can be larger.</li>
+        <li>v3: exact Uniswap-v3 swap math (full TickMath port, <code>getAmount0Delta/getAmount1Delta</code> rounding), <b>multi-tick since v4.5</b>: the swap walks up to 4 tickSpacing intervals per direction. Crossing a tick upward adds its <code>liquidityNet</code>; crossing downward subtracts it (uninitialized ticks have net 0). The fee is taken on the gross input. A swap that would go beyond the intervals read, or into a region with zero liquidity, is rejected, not approximated (flag “v3 multi-tick (≤N intervals)”). If the tick read fails, the scanner falls back to the old single-interval model (flag “v3 in-interval”).</li>
         <li>Optimal size: binary search for the largest input that stays within both legs’ caps, then ternary search on the concave profit curve, then an exhaustive check of the final window.</li>
         <li>USD values: WPLS/USD comes from the deepest v2 WPLS/USDC or WPLS/DAI pool, treating the bridged stables as $1. Other tokens are priced through their deepest WPLS pool.</li>
       </ul></div>
@@ -266,7 +268,7 @@
         <li>New: LibertySwap V3 on-chain pools are included in the cycle scan, and pools with a gap above 50% or a capacity below $25 are hidden as suspicious/dust by default.</li>
       </ul></div>
     <div class="docs-section"><h4>Limitations</h4>
-      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the current tick interval to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 is limited to the current tick interval. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
+      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the multi-tick depth (up to 4 intervals) to v3 legs, and lists only profitable routes. Gas is estimated (live eth_gasPrice × 250k gas for 2-hop / 350k for 3-hop, valued at WPLS/USD) and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the 4 tick intervals read per direction. Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
   </div>
 </div>
 <script>
@@ -307,7 +309,7 @@ const LIB_BRIDGE = {
 
 const SEL = {
   getPair: 'e6a43905', getPool: '1698ee82', getReserves: '0902f1ac',
-  slot0: '3850c7bd', liquidity: '1a686502', tickSpacing: 'd0c93a7c',
+  slot0: '3850c7bd', liquidity: '1a686502', tickSpacing: 'd0c93a7c', ticks: 'f30dba93',
   tryBlockAndAggregate: '399542e9',
 };
 
@@ -375,8 +377,8 @@ async function rpc(method, params) {
   }
   throw new Error(`All RPCs failed: ${lastErr && lastErr.message}`);
 }
-async function multicall(calls) {
-  const ret = await rpc('eth_call', [{ to: MULTICALL3, data: encodeMulticall(calls) }, 'latest']);
+async function multicall(calls, blockTag = 'latest') {
+  const ret = await rpc('eth_call', [{ to: MULTICALL3, data: encodeMulticall(calls) }, blockTag]);
   return decodeMulticall(ret);
 }
 
@@ -440,6 +442,71 @@ function v3AmountOut(amountIn, st, zeroForOne) {
   }
 }
 
+// ─── Multi-tick v3 (v4.5) ──────────────────────────────────────────────────────
+// Liquidity only changes at initialized ticks (multiples of tickSpacing). We read ticks(t) for the
+// V3_INTERVALS boundaries on each side of the price and build piecewise-constant-L intervals.
+// Crossing a tick upward adds liquidityNet; downward subtracts it (uninitialized ticks have net 0).
+const V3_INTERVALS = 4, MIN_TICK = -887272, MAX_TICK = 887272;
+function v3BoundaryTicks(tick, spacing) {
+  const lower = Math.floor(tick / spacing) * spacing, upper = lower + spacing, down = [], up = [];
+  for (let k = 0; k < V3_INTERVALS; k++) {
+    if (lower - k * spacing >= MIN_TICK) down.push(lower - k * spacing);
+    if (upper + k * spacing <= MAX_TICK) up.push(upper + k * spacing);
+  }
+  return { down, up };
+}
+// netByTick: Map tick -> liquidityNet (BigInt). Returns intervals ordered away from the current price.
+function buildV3Intervals(st, netByTick) {
+  const { down, up } = v3BoundaryTicks(st.tick, st.spacing);
+  const intervalsDown = [], intervalsUp = [];
+  let L = st.L, cur = st.sqrtP;
+  for (const t of down) {               // price moving down: [sqrt(t), cur] at L, then cross t
+    if (L <= 0n) break;
+    const lo = sqrtAtTick(t); intervalsDown.push({ sqrtLo: lo, sqrtHi: cur, L });
+    if (!netByTick.has(t)) break;        // unknown tick data → stop (conservative)
+    L -= netByTick.get(t); cur = lo;
+  }
+  L = st.L; cur = st.sqrtP;
+  for (const t of up) {                 // price moving up: [cur, sqrt(t)] at L, then cross t
+    if (L <= 0n) break;
+    const hi = sqrtAtTick(t); intervalsUp.push({ sqrtLo: cur, sqrtHi: hi, L });
+    if (!netByTick.has(t)) break;
+    L += netByTick.get(t); cur = hi;
+  }
+  return { ...st, intervalsDown, intervalsUp };
+}
+function v3MaxInMulti(st, zeroForOne) {
+  const iv = zeroForOne ? st.intervalsDown : st.intervalsUp;
+  let net = 0n;
+  for (const { sqrtLo, sqrtHi, L } of iv) {
+    if (sqrtHi <= sqrtLo) continue;
+    net += zeroForOne ? (L * Q96 * (sqrtHi - sqrtLo)) / (sqrtHi * sqrtLo) : (L * (sqrtHi - sqrtLo)) / Q96;
+  }
+  return (net * PPM) / (PPM - st.feePpm);
+}
+// Steps through intervals; fee is taken on the gross input (sum of per-step fees, rounding aside).
+function v3AmountOutMulti(amountIn, st, zeroForOne) {
+  if (amountIn <= 0n) return 0n;
+  if (amountIn > v3MaxInMulti(st, zeroForOne)) return null;
+  let rem = (amountIn * (PPM - st.feePpm)) / PPM, out = 0n;
+  const iv = zeroForOne ? st.intervalsDown : st.intervalsUp;
+  for (const { sqrtLo, sqrtHi, L } of iv) {
+    if (rem <= 0n) break;
+    if (sqrtHi <= sqrtLo || L <= 0n) continue;
+    if (zeroForOne) {                   // start at sqrtHi, move toward sqrtLo
+      const cap = (L * Q96 * (sqrtHi - sqrtLo)) / (sqrtHi * sqrtLo);
+      if (rem <= cap) { const num = L * Q96; const q = divUp(num * sqrtHi, num + rem * sqrtHi); out += (L * (sqrtHi - q)) / Q96; rem = 0n; break; }
+      out += (L * (sqrtHi - sqrtLo)) / Q96; rem -= cap;
+    } else {                            // start at sqrtLo, move toward sqrtHi
+      const cap = (L * (sqrtHi - sqrtLo)) / Q96;
+      if (rem <= cap) { const q = sqrtLo + (rem * Q96) / L; out += (L * Q96 * (q - sqrtLo)) / (q * sqrtLo); rem = 0n; break; }
+      out += (L * Q96 * (sqrtHi - sqrtLo)) / (sqrtHi * sqrtLo); rem -= cap;
+    }
+  }
+  return rem > 0n ? null : out;
+}
+const hasMulti = st => !!(st && st.intervalsDown && st.intervalsUp);
+
 // ─── Generic leg: quote(amountIn) and maxIn for a pool + direction ────────────
 function makeLeg(pool, tokenIn) {
   const zeroForOne = tokenIn === pool.token0;
@@ -447,6 +514,10 @@ function makeLeg(pool, tokenIn) {
     const [rIn, rOut] = zeroForOne ? [pool.r0, pool.r1] : [pool.r1, pool.r0];
     return { pool, tokenIn, rIn, rOut, maxIn: rIn / 10n, // cap at 10% of input reserve
       quote: x => v2AmountOut(x, rIn, rOut, pool.feePpm) };
+  }
+  if (hasMulti(pool.st)) {
+    const iv = zeroForOne ? pool.st.intervalsDown : pool.st.intervalsUp;
+    return { pool, tokenIn, multi: iv.length, maxIn: v3MaxInMulti(pool.st, zeroForOne), quote: x => v3AmountOutMulti(x, pool.st, zeroForOne) };
   }
   return { pool, tokenIn, maxIn: v3MaxIn(pool.st, zeroForOne), quote: x => v3AmountOut(x, pool.st, zeroForOne) };
 }
@@ -543,6 +614,27 @@ async function fetchPoolStates(pools) {
     if (p.bad) continue;
     if (p.kind === 'v2') { if (p.r0 > 0n && p.r1 > 0n) live.push(p); }
     else if (p.L > 0n && p.spacing > 0) { p.st = makeV3State(p.sqrtP, p.tick, p.L, p.spacing, p.feePpm); live.push(p); }
+  }
+  // Second pass at the SAME block: tick boundaries for multi-tick v3 depth.
+  const tcalls = [], tidx = [];
+  live.filter(p => p.kind === 'v3').forEach(p => {
+    const { down, up } = v3BoundaryTicks(p.tick, p.spacing);
+    for (const t of [...down, ...up]) {
+      tcalls.push({ target: p.address, data: SEL.ticks + BigInt.asUintN(256, BigInt(t)).toString(16).padStart(64, '0') });
+      tidx.push([p, t]);
+    }
+  });
+  if (tcalls.length) {
+    try {
+      const tr = await multicall(tcalls, '0x' + BigInt(block).toString(16));
+      const maps = new Map();
+      tr.results.forEach((r, k) => {
+        const [p, t] = tidx[k];
+        if (!maps.has(p)) maps.set(p, new Map());
+        if (r.success && r.data.length >= 128) maps.get(p).set(t, BigInt.asIntN(256, wordBig(r.data, 1)));
+      });
+      for (const [p, m] of maps) p.st = buildV3Intervals(p.st, m);
+    } catch (e) { /* fall back to single-interval v3 */ }
   }
   return { block: Number(block), pools: live };
 }
@@ -817,11 +909,64 @@ async function runScan() {
     state.rows = [...rows, ...triRows];
     if (triRows.length) state.rows.sort((a, b) => (b.prof ? (b.profUsd ?? 0) : -1) - (a.prof ? (a.profUsd ?? 0) : -1));
     renderRows();
+    checkAlerts();
     if ($('v-bridge').checked && !state.bridgeDone) { state.bridgeDone = true; runBridge(); }
   } catch (e) {
     $('tel-rpc').innerHTML = badge('error', 'ERROR');
     showAlert('Scan failed: ' + (e.message || e), 'err');
   } finally { state.busy = false; btn.disabled = false; btn.textContent = 'Scan now'; }
+}
+
+// ─── Profitability alerts (v4.5) ───────────────────────────────────────────────
+// Fires a beep + browser notification only for routes that were NOT alert-worthy in the previous scan.
+const routeKey = r => [r.legA, r.legB, r.legC].filter(Boolean).map(l => l.pool.address + ':' + l.tokenIn).join('>');
+function alertWorthy(r) {
+  const minBps = Number($('in-minbps').value) || 0;
+  return r.prof && !r.suspicious && r.bps != null && r.bps >= minBps && (r.netUsd == null || r.netUsd > 0);
+}
+function beep() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    const ctx = state.audio || (state.audio = new AC());
+    [0, 0.18].forEach(t0 => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = 'sine'; o.frequency.value = 880; o.connect(g); g.connect(ctx.destination);
+      const t = ctx.currentTime + t0; g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+      o.start(t); o.stop(t + 0.16);
+    });
+  } catch (e) { /* audio unavailable */ }
+}
+function onAlertToggle() {
+  const on = $('v-alert').checked;
+  state.alerted = new Set();
+  if (on) {
+    beep(); // user gesture: unlocks audio
+    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().then(updateAlertStatus);
+  }
+  updateAlertStatus();
+}
+function updateAlertStatus() {
+  const el = $('alert-status'); if (!el) return;
+  if (!$('v-alert').checked) { el.textContent = ''; return; }
+  const np = 'Notification' in window ? Notification.permission : 'unsupported';
+  el.textContent = `Alerts armed · sound on · notifications: ${np}` + (state.alertCount ? ` · ${state.alertCount} fired this session` : '');
+}
+function checkAlerts() {
+  const cur = new Set(), fresh = [];
+  for (const r of state.rows) if (alertWorthy(r)) { const k = routeKey(r); cur.add(k); if (!(state.alerted || new Set()).has(k)) fresh.push(r); }
+  state.alerted = cur;
+  if (!$('v-alert') || !$('v-alert').checked || !fresh.length) return;
+  state.alertCount = (state.alertCount || 0) + fresh.length;
+  beep();
+  const S = $('in-start').value, best = fresh.sort((a, b) => (b.netUsd ?? b.profUsd ?? 0) - (a.netUsd ?? a.profUsd ?? 0))[0];
+  const route = [best.legA, best.legB, best.legC].filter(Boolean).map(l => l.pool.label).join(' → ');
+  const msg = `${fresh.length} new profitable route${fresh.length > 1 ? 's' : ''} for ${S}. Best: ${route}, ${best.bps.toFixed(2)} bps, net ≈ ${best.netUsd != null ? fmtUsd(best.netUsd) : fmtUsd(best.profUsd)} (block ${state.block}).`;
+  showAlert('🔔 ' + msg, 'info');
+  try { if ('Notification' in window && Notification.permission === 'granted') new Notification('Arb-Me-Now: profitable route', { body: msg, tag: 'arb-me-now' }); } catch (e) { }
+  document.title = `(${fresh.length}) Arb-Me-Now`;
+  setTimeout(() => { document.title = 'Arb-Me-Now'; }, 15000);
+  updateAlertStatus();
 }
 
 function renderRows() {
@@ -858,7 +1003,11 @@ function renderRows() {
       else if (r.userExceedsCap) userCell = '<span class="profit-marginal">exceeds safe depth</span>';
       else userCell = '—';
       const flags = [];
-      if (!isTri && (r.legA.pool.kind === 'v3' || r.legB.pool.kind === 'v3')) flags.push('<span class="flag flag-v3">v3 in-interval (conservative cap)</span>');
+      const v3legs = [r.legA, r.legB, r.legC].filter(l => l && l.pool.kind === 'v3');
+      if (v3legs.length) {
+        const n = Math.max(...v3legs.map(l => l.multi || 1));
+        flags.push(`<span class="flag flag-v3">${v3legs.some(l => l.multi) ? `v3 multi-tick (≤${n} interval${n > 1 ? 's' : ''})` : 'v3 in-interval (conservative cap)'}</span>`);
+      }
       if (isTri) flags.push('<span class="flag flag-v3">3-hop triangular</span>');
       if (r.wild) flags.push('<span class="flag flag-sus">gap &gt;50% – broken/mispriced pool</span>');
       if (r.dust) flags.push('<span class="flag flag-sus">dust depth</span>');
@@ -896,7 +1045,7 @@ function legDetail(leg, label) {
       <div class="detail-row"><span class="dk">tick / spacing</span><span class="dv mono">${p.tick} / ${p.spacing}</span></div>
       <div class="detail-row"><span class="dk">Active liquidity L</span><span class="dv mono">${p.L}</span></div>
       <div class="detail-row"><span class="dk">Fee</span><span class="dv mono">${Number(p.feePpm) / 1e4}%</span></div>
-      <div class="detail-row"><span class="dk">Max input inside current interval</span><span class="dv mono">${fmtUnits(leg.maxIn, TOKENS[inSym].dec, 6)} ${inSym} (${fmtUsd(legCapUsd(leg))})</span></div>`;
+      <div class="detail-row"><span class="dk">${leg.multi ? `Max input across ${leg.multi} tick interval${leg.multi > 1 ? 's' : ''}` : 'Max input inside current interval'}</span><span class="dv mono">${fmtUnits(leg.maxIn, TOKENS[inSym].dec, 6)} ${inSym} (${fmtUsd(legCapUsd(leg))})</span></div>`;
   }
   return `<div class="stat-card"><div class="label">${label}: ${p.label} — ${inSym} → ${outSym}</div>
     <div class="detail-row"><span class="dk">Pool</span><span class="dv mono"><a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://scan.pulsechain.com/address/${p.address}">${short(p.address)}</a></span></div>${st}</div>`;
@@ -920,7 +1069,7 @@ function showCompanion(i) {
 Cycle input cap (both legs within safe depth): ${r.opt ? fmtUnits(r.opt.cap, dS, 8) + ' ' + S : '—'}
 
 ${calc('Your size', r.user)}</pre>
-    <div class="small">Execution note: both legs must land in the same block (a contract or bundle) for the profit to hold. On v3, the size is limited to the current tick interval, so real capacity may be larger. Gas is not included.</div>`;
+    <div class="small">Execution note: both legs must land in the same block (a contract or bundle) for the profit to hold. On v3, the size is limited to the tick intervals that were read (up to 4 per direction), so real capacity may be larger. Gas is not included.</div>`;
   switchView('companion');
 }
 
