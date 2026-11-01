@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.4
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.5
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -42,15 +42,17 @@ All addresses and fees were verified on-chain against live contract data. See th
 2. Choose your **start token**, enter your **trade size**, and set a min profit threshold.
 3. Toggle venues on/off to narrow the search.
 4. Click **Inspect** on any row to see both legs, pool addresses, reserves, and the exact integer calculation.
-5. Use the **LibertySwap bridge** panel to check whether USDC or WETH on PulseChain is priced below its Ethereum equivalent.
+5. Tick **🔔 Alert on new profitable route** plus **Auto-refresh every 15 s** to get a sound + browser notification when a net-profitable route appears.
+6. Use the **LibertySwap bridge** panel to check whether USDC or WETH on PulseChain is priced below its Ethereum equivalent.
 
 ---
 
 ## Limitations
 
-- **2-pool round trips** and **triangular 3-hop routes** (S → Y → Z → S over three distinct pools) are checked. Triangular legs use the 10% reserve cap (v2) and the current tick interval (v3); only profitable triangular routes are listed.
-- Gas is **not deducted** from the profit figures.
-- LibertySwap V3 sizes are limited to the **current tick interval** (conservative).
+- **2-pool round trips** and **triangular 3-hop routes** (S → Y → Z → S over three distinct pools) are checked. Triangular legs use the 10% reserve cap (v2) and multi-tick depth (v3); only profitable triangular routes are listed.
+- Gas is **estimated** (live gas price × fixed gas units) and shown as net profit; MEV is not modelled.
+- LibertySwap V3 depth is modelled across up to **4 tick intervals per direction** (v4.5); deeper liquidity is not modelled.
+- 🔔 Alerts run in the browser only — the tab must stay open.
 - Bridge checks are **non-atomic** — the cross-chain price comparison excludes gas, slippage, and bridge-crossing time. Quotes are informational only.
 - Nothing is signed or sent. This is analysis, not execution.
 
@@ -68,6 +70,11 @@ All addresses and fees were verified on-chain against live contract data. See th
 ---
 
 ## Changelog
+
+### v4.5 (2026-11-01)
+- Multi-tick LibertySwap V3 depth: up to 4 tick intervals per direction, `ticks()` read in a second Multicall3 pinned to the same block (falls back to single-interval).
+- Profitability alerts: sound + browser notification + banner, once per newly profitable route (net of gas, ≥ min bps, never suspicious rows).
+- White paper / process manual updated to v4.5.
 
 ### v4.4 (2026-11-01)
 - Gas-adjusted net profit (live eth_gasPrice × 250k/350k gas).
