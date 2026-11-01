@@ -34,7 +34,7 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ---
 
-📘 **Full process manual / white paper:** [WHITEPAPER.md](WHITEPAPER.md)
+📘 **Full process manual / white paper:** [PDF edition](Arb-Me-Now_WhitePaper_v4.4.pdf) · [Markdown](WHITEPAPER.md)
 
 ## How to use
 
