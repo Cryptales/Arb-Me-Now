@@ -125,7 +125,7 @@ Private/bundled submission (MEV protection) · in-page wallet signing (opt-in) �
 
 ## 10. Version history
 
-- **v4.6.1:** Fixed stale browser tab title (v4.3 → v4.6); added `arb_build/build.py` build script.
+- **v4.6.1:** Fixed stale browser tab title (v4.3 → v4.6); white paper PDF regenerated.
 - **v4.6:** ArbExecutor atomic flash-swap contract (PulseX v1/v2, 9mm, LibertySwap V3; 2–4 legs), fork-tested; Trade Companion execution panel with calldata builder and read-only dry run.
 - **v4.5:** multi-tick LibertySwap V3 depth (up to 4 intervals per direction, same-block tick reads) and profitability alerts (sound + browser notification, deduplicated).
 - **v4.4:** triangular 3-hop routes, gas-adjusted net profit, separate route counts in the summary, and old pages redirected to the scanner.
