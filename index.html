@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arb-Me-Now | PulseChain Arbitrage Engine v4.3</title>
+  <style>
+    :root {
+      --bg-primary: #0b0e14;
+      --bg-secondary: #151a24;
+      --bg-tertiary: #1f2637;
+      --accent-cyan: #00e5ff;
+      --accent-green: #00e676;
+      --accent-red: #ff1744;
+      --accent-orange: #ff9800;
+      --accent-purple: #ce93d8;
+      --text-main: #f0f4fc;
+      --text-muted: #8b9bb4;
+      --border-color: #2b354c;
+      --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: var(--bg-primary); color: var(--text-main); font-family: var(--font-sans); line-height: 1.5; padding-bottom: 60px; }
+
+    header { background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    .brand { display: flex; align-items: center; gap: 0.75rem; font-size: 1.2rem; font-weight: 700; color: var(--accent-cyan); }
+    .brand-sub { font-size: 0.7rem; color: var(--text-muted); font-weight: 400; margin-left: 0.25rem; }
+    nav { display: flex; gap: 0.5rem; }
+    nav button { background: transparent; border: 1px solid var(--border-color); color: var(--text-muted); padding: 0.45rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; transition: all 0.18s; }
+    nav button.active, nav button:hover { background: var(--bg-tertiary); color: var(--accent-cyan); border-color: var(--accent-cyan); }
+
+    .container { max-width: 1400px; margin: 1.5rem auto; padding: 0 1.25rem; }
+
+    /* Telemetry */
+    .telemetry-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0.85rem; margin-bottom: 1.25rem; }
+    .stat-card { background: var(--bg-secondary); border: 1px solid var(--border-color); padding: 0.9rem 1rem; border-radius: 8px; }
+    .stat-card .label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .stat-card .value { font-size: 1.1rem; font-weight: 700; font-family: var(--font-mono); margin-top: 0.2rem; display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+    .sub-detail { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.2rem; font-family: var(--font-mono); }
+
+    .badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.18rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-weight: 700; font-family: var(--font-mono); }
+    .badge::before { content: '●'; font-size: 0.6rem; }
+    .badge-healthy { background: rgba(0,230,118,0.12); color: var(--accent-green); }
+    .badge-stale { background: rgba(255,152,0,0.12); color: var(--accent-orange); }
+    .badge-error { background: rgba(255,23,68,0.12); color: var(--accent-red); }
+    .badge-loading { background: rgba(0,229,255,0.10); color: var(--accent-cyan); }
+    .badge-unavailable { background: rgba(139,155,180,0.12); color: var(--text-muted); }
+
+    /* Control Panel */
+    .control-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); padding: 1rem 1.25rem; border-radius: 8px; margin-bottom: 1.25rem; display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; }
+    .input-group { display: flex; flex-direction: column; gap: 0.3rem; }
+    .input-group label { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    input, select { background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-main); padding: 0.45rem 0.7rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.875rem; }
+    input:focus, select:focus { outline: none; border-color: var(--accent-cyan); }
+    .toggle-group { display: flex; align-items: center; gap: 0.5rem; }
+    .toggle-group input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent-purple); cursor: pointer; }
+    .toggle-group label { font-size: 0.8rem; color: var(--text-main); cursor: pointer; }
+    .toggle-group .badge { font-size: 0.65rem; }
+
+    button.primary { background: var(--accent-cyan); color: var(--bg-primary); border: none; padding: 0.5rem 1.25rem; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 0.9rem; letter-spacing: 0.02em; }
+    button.primary:hover { opacity: 0.88; }
+    button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.sm { padding: 0.25rem 0.65rem; font-size: 0.78rem; }
+    .source-divider { border-top: 1px solid var(--border-color); width: 100%; margin: 0.25rem 0; }
+    .source-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; padding-top: 0.1rem; }
+
+    /* Table */
+    .table-container { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th, td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border-color); font-size: 0.875rem; vertical-align: middle; }
+    th { background: var(--bg-tertiary); color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; white-space: nowrap; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.015); }
+    .mono { font-family: var(--font-mono); }
+    .profit-positive { color: var(--accent-green); font-weight: 700; }
+    .profit-negative { color: var(--accent-red); font-weight: 700; }
+    .profit-marginal { color: var(--accent-orange); font-weight: 700; }
+    .route-tag { display: inline-block; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.7rem; font-weight: 700; }
+    .tag-amm { background: rgba(0,229,255,0.1); color: var(--accent-cyan); border: 1px solid rgba(0,229,255,0.2); }
+    .tag-liberty { background: rgba(206,147,216,0.1); color: var(--accent-purple); border: 1px solid rgba(206,147,216,0.2); }
+    .tag-cross { background: rgba(255,152,0,0.1); color: var(--accent-orange); border: 1px solid rgba(255,152,0,0.2); }
+    .stale-warn { font-size: 0.65rem; color: var(--accent-orange); font-family: var(--font-mono); }
+
+    /* Empty / Error states */
+    .empty-state { padding: 3rem; text-align: center; color: var(--text-muted); }
+    .empty-state h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+
+    /* Views */
+    .view-panel { display: none; }
+    .view-panel.active { display: block; }
+
+    /* Companion */
+    .companion-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem; }
+    @media (max-width: 700px) { .companion-grid { grid-template-columns: 1fr; } }
+    .detail-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); font-size: 0.875rem; }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-row .dk { color: var(--text-muted); }
+    .detail-row .dv { font-family: var(--font-mono); font-weight: 600; }
+
+    /* Docs */
+    .docs-section { background: var(--bg-secondary); border: 1px solid var(--border-color); padding: 1.5rem; border-radius: 8px; margin-bottom: 1rem; }
+    .docs-section h4 { color: var(--accent-cyan); margin-bottom: 0.75rem; font-size: 0.95rem; }
+    .docs-section p, .docs-section li { color: var(--text-muted); font-size: 0.875rem; line-height: 1.7; }
+    .docs-section ul { margin: 0.75rem 1.5rem; }
+    .docs-section code { font-family: var(--font-mono); background: var(--bg-tertiary); padding: 0.15rem 0.35rem; border-radius: 3px; font-size: 0.82rem; color: var(--accent-cyan); }
+
+    .alert-box { padding: 0.75rem 1rem; border-radius: 6px; font-size: 0.82rem; margin-bottom: 1rem; }
+    .alert-info { background: rgba(0,229,255,0.07); border: 1px solid rgba(0,229,255,0.2); color: var(--accent-cyan); }
+    .alert-warn { background: rgba(255,152,0,0.07); border: 1px solid rgba(255,152,0,0.2); color: var(--accent-orange); }
+    .alert-err { background: rgba(255,23,68,0.07); border: 1px solid rgba(255,23,68,0.25); color: var(--accent-red); }
+    .flag { display:inline-block; font-size:0.66rem; padding:1px 6px; border-radius:4px; margin:1px 2px 1px 0; border:1px solid var(--border-color); color:var(--text-muted); white-space:nowrap; }
+    .flag-v3 { color: var(--accent-purple); border-color: rgba(206,147,216,0.4); }
+    .flag-sus { color: var(--accent-red); border-color: rgba(255,23,68,0.4); }
+    .flag-ok { color: var(--accent-green); border-color: rgba(0,230,118,0.4); }
+    .small { font-size: 0.75rem; color: var(--text-muted); }
+    .row-flex { display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end; }
+    h2.section { font-size: 0.95rem; margin: 1.5rem 0 0.6rem; color: var(--accent-cyan); }
+    pre.calc { background: var(--bg-primary); border:1px solid var(--border-color); border-radius:6px; padding:0.75rem; font-family: var(--font-mono); font-size:0.75rem; white-space:pre-wrap; overflow-x:auto; color: var(--text-main); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+    Arb-Me-Now <span class="brand-sub">v4.3 — PulseChain on-chain scanner + LibertySwap</span>
+  </div>
+  <nav>
+    <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
+    <button id="nav-companion" onclick="switchView('companion')">Trade Companion</button>
+    <button id="nav-docs" onclick="switchView('docs')">Docs &amp; Audit</button>
+  </nav>
+</header>
+
+<div class="container">
+
+  <div class="telemetry-strip">
+    <div class="stat-card"><div class="label">PulseChain RPC</div>
+      <div class="value" id="tel-rpc"><span class="badge badge-loading">CONNECTING</span></div>
+      <div class="sub-detail" id="tel-rpc-latency">—</div></div>
+    <div class="stat-card"><div class="label">Snapshot Block</div>
+      <div class="value mono" id="tel-block">—</div>
+      <div class="sub-detail" id="tel-block-age">All pools read at this single block</div></div>
+    <div class="stat-card"><div class="label">LibertySwap API</div>
+      <div class="value" id="tel-liberty"><span class="badge badge-loading">CONNECTING</span></div>
+      <div class="sub-detail" id="tel-liberty-detail">Routers: —</div></div>
+    <div class="stat-card"><div class="label">WPLS / USD</div>
+      <div class="value mono" id="tel-wpls">—</div>
+      <div class="sub-detail" id="tel-wpls-src">source: —</div></div>
+    <div class="stat-card"><div class="label">Live Pools</div>
+      <div class="value mono" id="tel-pairs">—</div>
+      <div class="sub-detail" id="tel-pairs-detail">—</div></div>
+    <div class="stat-card"><div class="label">Snapshot Age</div>
+      <div class="value" id="tel-age"><span class="badge badge-unavailable">NOT YET RUN</span></div>
+      <div class="sub-detail">Stale threshold: 20 s</div></div>
+  </div>
+
+  <div id="alert-area"></div>
+
+  <!-- ═══════════ SCANNER ═══════════ -->
+  <div id="view-dashboard" class="view-panel active">
+    <div class="control-panel">
+      <div class="input-group"><label>Start / end token</label>
+        <select id="in-start"></select></div>
+      <div class="input-group"><label>Your trade size (start token)</label>
+        <input id="in-size" type="text" value="1000" inputmode="decimal"></div>
+      <div class="input-group"><label>Min profit (bps of input)</label>
+        <input id="in-minbps" type="number" value="0" min="0" step="1"></div>
+      <div class="input-group"><label>Recipient for LibertySwap quotes (optional)</label>
+        <input id="in-recipient" type="text" placeholder="0x… (quotes only, nothing is signed)"></div>
+      <div class="toggle-group">
+        <label><input type="checkbox" id="v-pulsex_v1" checked> PulseX v1 (0.29%)</label>
+        <label><input type="checkbox" id="v-pulsex_v2" checked> PulseX v2 (0.29%)</label>
+        <label><input type="checkbox" id="v-ninemm_v2" checked> 9mm v2 (0.25%)</label>
+        <label><input type="checkbox" id="v-liberty_v3" checked> LibertySwap V3 pools</label>
+        <label><input type="checkbox" id="v-bridge" checked> LibertySwap bridge quotes</label>
+      </div>
+      <div class="toggle-group">
+        <label><input type="checkbox" id="opt-profitable"> Only rows ≥ min profit</label>
+        <label><input type="checkbox" id="opt-suspicious"> Show suspicious / dust pools</label>
+        <label><input type="checkbox" id="opt-auto"> Auto-refresh every 15 s</label>
+      </div>
+      <button class="primary" id="btn-scan" onclick="runScan()">Scan now</button>
+    </div>
+
+    <div class="table-container">
+      <table>
+        <thead><tr>
+          <th>#</th><th>Cycle</th><th>Buy leg → Sell leg</th><th>Mid gap</th>
+          <th>Optimal size → profit</th><th>Profit (USD)</th><th>At your size</th><th>Flags</th><th></th>
+        </tr></thead>
+        <tbody id="results-body">
+          <tr><td colspan="9"><div class="empty-state"><h3>No scan yet</h3><p>Press “Scan now”. Every pool is read on-chain in one Multicall3 call at a single block.</p></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="small" id="results-summary" style="margin-top:0.5rem"></div>
+
+    <div id="bridge-section">
+      <h2 class="section">LibertySwap bridge: PulseChain → Ethereum price check</h2>
+      <div class="control-panel">
+        <div class="input-group"><label>Notional to test (USD)</label>
+          <input id="in-bridge-usd" type="number" value="1000" min="10" step="10"></div>
+        <div class="input-group"><label>ETH/USD reference (Ethereum)</label>
+          <input id="in-ethusd" type="number" step="0.01" placeholder="auto (Coinbase spot)"></div>
+        <button class="primary" id="btn-bridge" onclick="runBridge()">Quote bridge routes</button>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead><tr><th>Route</th><th>PulseChain price</th><th>Reference price</th><th>Send → receive</th><th>Fee</th><th>Value in → out (USD)</th><th>Net edge</th></tr></thead>
+          <tbody id="bridge-body"><tr><td colspan="7" class="small">Not quoted yet. Quotes use LibertySwap <code>/v3/swap/quote</code> (rate limit 30 req / 60 s, guarded locally).</td></tr></tbody>
+        </table>
+      </div>
+      <div class="alert-box alert-warn" style="margin-top:0.75rem">This is not atomic. A bridge round-trip means buying on PulseChain, bridging (minutes, not one block) and selling on Ethereum. The edge shown excludes gas on both chains, bridge time risk, and slippage on the PulseChain purchase (valued at mid price). The quote is informational only. Nothing is signed or sent.</div>
+    </div>
+  </div>
+
+  <!-- ═══════════ COMPANION ═══════════ -->
+  <div id="view-companion" class="view-panel">
+    <div id="companion-body" class="empty-state"><h3>No route selected</h3><p>Click “Inspect” on a scanner row to see both legs, pool state and the exact per-leg calculation.</p></div>
+  </div>
+
+  <!-- ═══════════ DOCS ═══════════ -->
+  <div id="view-docs" class="view-panel">
+    <div class="docs-section"><h4>What this scanner does</h4>
+      <p>For the chosen start token S, the scanner finds every pool S/Y across the enabled venues. It evaluates each two-pool cycle S → Y (buy pool) → S (sell pool) with exact integer (BigInt) AMM math. It reports the gross mid-price gap, the optimal input size and the profit at that size, and the result at your own size. Gas is <b>not</b> deducted, because it depends on your wallet and how you execute.</p></div>
+    <div class="docs-section"><h4>Data pipeline (as implemented)</h4>
+      <ul>
+        <li>Pool discovery: <code>getPair</code> (v2 factories) and <code>getPool(a,b,fee)</code> (LibertySwap V3 factory) for 7 pairs × 4 venues, all sent as one Multicall3 call.</li>
+        <li>State: <code>getReserves</code> for v2; <code>slot0</code>, <code>liquidity</code> and <code>tickSpacing</code> for v3. All are read in a single <code>Multicall3.tryBlockAndAggregate</code> (selector <code>0x399542e9</code>) at <code>0xcA11…CA11</code>, so every number comes from the same block. The block number is returned by the contract and shown in the telemetry strip. rpc.pulsechain.com rejects JSON-RPC batch requests, so Multicall3 is required, not optional.</li>
+        <li>RPC fallback: rpc.pulsechain.com, then pulsechain-rpc.publicnode.com.</li>
+      </ul></div>
+    <div class="docs-section"><h4>Verified venue parameters</h4>
+      <ul>
+        <li>PulseX v1: factory <code>0x1715a3E4A142d8b698131108995174F37aEBA10D</code>, fee <b>0.29%</b>. Checked against router <code>getAmountsOut</code>, exact match.</li>
+        <li>PulseX v2: factory <code>0x29eA7545DEf87022BAdc76323F373EA1e707C523</code>, fee <b>0.29%</b>. Router match.</li>
+        <li>9mm v2: factory <code>0x3a0Fa7884dD93f3cd234bBE2A0958Ef04b05E13b</code>, fee <b>0.25%</b>. Back-solved from on-chain Swap/Sync events; every sample was 25.00 bps.</li>
+        <li>LibertySwap V3: factory <code>0x796fcbDC956b85797EFe21145Aa97599B7FB36a6</code>. Fee tiers 0.01 / 0.05 / 0.25 / 1%; tickSpacing is read on-chain per pool.</li>
+      </ul></div>
+    <div class="docs-section"><h4>Math</h4>
+      <ul>
+        <li>v2: <code>out = in·(1e6−fee)·rOut / (rIn·1e6 + in·(1e6−fee))</code>, in integers (fee in ppm). The input size is capped at 10% of the input reserve.</li>
+        <li>v3: exact Uniswap-v3 swap math (full TickMath port, <code>getAmount0Delta/getAmount1Delta</code> rounding), <b>restricted to the current initialized-tick interval</b>. A swap that would cross a tick boundary is rejected, not approximated. As a result, v3 sizes are conservative (flag “v3 in-interval”) and real capacity can be larger.</li>
+        <li>Optimal size: binary search for the largest input that stays within both legs’ caps, then ternary search on the concave profit curve, then an exhaustive check of the final window.</li>
+        <li>USD values: WPLS/USD comes from the deepest v2 WPLS/USDC or WPLS/DAI pool, treating the bridged stables as $1. Other tokens are priced through their deepest WPLS pool.</li>
+      </ul></div>
+    <div class="docs-section"><h4>LibertySwap bridge API (schema verified with live calls)</h4>
+      <ul>
+        <li><code>GET https://apis.libertyswap.finance/v3/swap/quote?srcToken&amp;dstToken&amp;amount(raw)&amp;srcChain&amp;dstChain&amp;recipient</code>. It returns <code>srcAmount, destAmount, fee{protocol{percentage}, total{amount}}, approval, methodParameters{calldata,value}, route{type}</code>. Errors come back as <code>{"error": "…"}</code>.</li>
+        <li>Observed routes: USDC 369→1 at 0.5%, WETH 369→1 (received as ETH) at 0.5%, USDC 1→369 at 0.3%. Same-chain swaps and PLS/pDAI cross-chain requests returned “Invalid quote request”.</li>
+        <li><code>/v3/swap/healthcheck</code> returns 404, so health is taken from <code>/v3/app/routers</code>. The rate limit is 30 requests per 60 s; this page keeps 2 requests in reserve.</li>
+      </ul></div>
+    <div class="docs-section"><h4>Corrections vs v4.1 / v4.2 draft</h4>
+      <ul>
+        <li>The PulseX v1 factory address had a typo (<code>…f37eaba10d</code> → <code>…f37aeba10d</code>), so v1 pools were never found.</li>
+        <li>The bridged USDC and DAI addresses were wrong. They have been replaced with the on-chain-verified <code>0x15D3…1F07</code> (6 dec) and <code>0xefD7…F305</code> (18 dec).</li>
+        <li>The 9mm fee was set to 0.30%; it is actually 0.25%. The PulseX fees were confirmed at 0.29%.</li>
+        <li>The old “Multicall” was a sequence of separate eth_calls, which could span blocks. It is now a real Multicall3 call at a single block.</li>
+        <li>The old cross-chain profit math mixed units. Bridge checks now compare USD values from an explicit reference price.</li>
+        <li>New: LibertySwap V3 on-chain pools are included in the cycle scan, and pools with a gap above 50% or a capacity below $25 are hidden as suspicious/dust by default.</li>
+      </ul></div>
+    <div class="docs-section"><h4>Limitations</h4>
+      <ul><li>Only 2-pool cycles are checked (no triangular routes). Gas, MEV and pending-block state are not modelled. v3 is limited to the current tick interval. Bridge checks are non-atomic. This is analysis, not execution; verify on-chain before trading.</li></ul></div>
+  </div>
+</div>
+<script>
+// ═══ Arb-Me-Now engine v4.3 — pure logic, no DOM. Runs in browser and Node 18+. ═══
+'use strict';
+
+const RPCS = ['https://rpc.pulsechain.com', 'https://pulsechain-rpc.publicnode.com'];
+const MULTICALL3 = '0xca11bde05977b3631167028862be2a173976ca11';
+const LIBERTY_BASE = 'https://apis.libertyswap.finance/v3';
+const QUOTE_PLACEHOLDER_RECIPIENT = '0x000000000000000000000000000000000000dEaD';
+
+// Every address/decimals pair below was read on-chain (symbol() + decimals()) on 2026-11-01.
+const TOKENS = {
+  WPLS: { addr: '0xa1077a294dde1b09bb078844df40758a5d0f9a27', dec: 18, name: 'Wrapped PLS' },
+  PLSX: { addr: '0x95b303987a60c71504d99aa1b13b4da07b0790ab', dec: 18, name: 'PulseX' },
+  HEX:  { addr: '0x2b591e99afe9f32eaa6214f7b7629768c40eeb39', dec: 8,  name: 'HEX' },
+  pDAI: { addr: '0x6b175474e89094c44da98b954eedeac495271d0f', dec: 18, name: 'pDAI (forked DAI)' },
+  DAI:  { addr: '0xefd766ccb38eaf1dfd701853bfce31359239f305', dec: 18, name: 'DAI (bridged from Ethereum)' },
+  USDC: { addr: '0x15d38573d2feeb82e7ad5187ab8c1d52810b1f07', dec: 6,  name: 'USDC (bridged from Ethereum)' },
+  WETH: { addr: '0x02dcdd04e3f455d838cd1249292c58f3b79e3c3c', dec: 18, name: 'WETH (bridged from Ethereum)' },
+};
+const PAIRS = [['WPLS','PLSX'],['WPLS','HEX'],['WPLS','pDAI'],['WPLS','DAI'],['WPLS','USDC'],['WPLS','WETH'],['USDC','DAI']];
+
+// Fees verified: PulseX v1/v2 = 29 bps (router getAmountsOut matched exactly);
+// 9mm v2 = 25 bps (back-solved from on-chain Swap/Sync events, every sample = 25.00 bps).
+const V2_VENUES = {
+  pulsex_v1: { label: 'PulseX v1', factory: '0x1715a3e4a142d8b698131108995174f37aeba10d', feePpm: 2900n },
+  pulsex_v2: { label: 'PulseX v2', factory: '0x29ea7545def87022badc76323f373ea1e707c523', feePpm: 2900n },
+  ninemm_v2: { label: '9mm v2',    factory: '0x3a0fa7884dd93f3cd234bbe2a0958ef04b05e13b', feePpm: 2500n },
+};
+const LIB_V3 = { label: 'LibertySwap V3', factory: '0x796fcbdc956b85797efe21145aa97599b7fb36a6', fees: [100, 500, 2500, 10000] };
+
+// LibertySwap bridge symbols (from /v3/app/routers) mapped to PulseChain tokens.
+const LIB_BRIDGE = {
+  USDC: { src: 'USDC', dst: 'USDC', dstDec: 6, dstLabel: 'USDC (Ethereum)' },
+  WETH: { src: 'WETH', dst: 'ETH',  dstDec: 18, dstLabel: 'ETH (Ethereum)' },
+};
+
+const SEL = {
+  getPair: 'e6a43905', getPool: '1698ee82', getReserves: '0902f1ac',
+  slot0: '3850c7bd', liquidity: '1a686502', tickSpacing: 'd0c93a7c',
+  tryBlockAndAggregate: '399542e9',
+};
+
+const Q96 = 1n << 96n;
+const MAX_U256 = (1n << 256n) - 1n;
+const PPM = 1000000n;
+
+// ─── hex / ABI helpers ────────────────────────────────────────────────────────
+const strip = h => (h.startsWith('0x') ? h.slice(2) : h);
+const pad32 = h => strip(h).toLowerCase().padStart(64, '0');
+const u256 = n => BigInt(n).toString(16).padStart(64, '0');
+const word = (hex, i) => hex.slice(i * 64, i * 64 + 64);
+const wordBig = (hex, i) => BigInt('0x' + (word(hex, i) || '0'));
+function wordInt24(hex, i) { // signed int24 stored in a 256-bit word
+  let v = wordBig(hex, i); if (v >= (1n << 255n)) v -= (1n << 256n); return Number(v);
+}
+const sortTokens = (a, b) => (BigInt(a) < BigInt(b) ? [a, b] : [b, a]);
+
+// tryBlockAndAggregate(bool requireSuccess, (address target, bytes callData)[] calls)
+function encodeMulticall(calls) {
+  const n = calls.length;
+  const tuples = calls.map(c => {
+    const data = strip(c.data);
+    const len = data.length / 2;
+    const padded = data.padEnd(Math.ceil(len / 32) * 64, '0');
+    return pad32(c.target) + u256(64) + u256(len) + padded;
+  });
+  let offs = [], cur = n * 32;
+  for (const t of tuples) { offs.push(u256(cur)); cur += t.length / 2; }
+  return '0x' + SEL.tryBlockAndAggregate + u256(0) + u256(64) + u256(n) + offs.join('') + tuples.join('');
+}
+function decodeMulticall(ret) {
+  const h = strip(ret);
+  const block = wordBig(h, 0);
+  const arr = Number(wordBig(h, 2)) * 2;           // byte offset → hex chars
+  const n = Number(BigInt('0x' + h.slice(arr, arr + 64)));
+  const base = arr + 64;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const off = base + Number(BigInt('0x' + h.slice(base + i * 64, base + i * 64 + 64))) * 2;
+    const success = BigInt('0x' + h.slice(off, off + 64)) === 1n;
+    const dOff = off + Number(BigInt('0x' + h.slice(off + 64, off + 128))) * 2;
+    const len = Number(BigInt('0x' + h.slice(dOff, dOff + 64)));
+    out.push({ success, data: h.slice(dOff + 64, dOff + 64 + len * 2) });
+  }
+  return { block, results: out };
+}
+
+// ─── RPC with fallback ────────────────────────────────────────────────────────
+let activeRpc = RPCS[0];
+async function rpc(method, params) {
+  let lastErr;
+  for (const url of [activeRpc, ...RPCS.filter(u => u !== activeRpc)]) {
+    try {
+      const t0 = Date.now();
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      if (j.error) throw new Error(j.error.message || 'RPC error');
+      activeRpc = url;
+      rpc.lastLatency = Date.now() - t0;
+      return j.result;
+    } catch (e) { lastErr = e; }
+  }
+  throw new Error(`All RPCs failed: ${lastErr && lastErr.message}`);
+}
+async function multicall(calls) {
+  const ret = await rpc('eth_call', [{ to: MULTICALL3, data: encodeMulticall(calls) }, 'latest']);
+  return decodeMulticall(ret);
+}
+
+// ─── Uniswap v2 math (exact integer, matches router getAmountOut) ─────────────
+function v2AmountOut(amountIn, rIn, rOut, feePpm) {
+  if (amountIn <= 0n || rIn <= 0n || rOut <= 0n) return 0n;
+  const inFee = amountIn * (PPM - feePpm);
+  return (inFee * rOut) / (rIn * PPM + inFee);
+}
+
+// ─── Uniswap v3 math (TickMath port + single-tick-range swap) ─────────────────
+const TICK_MULT = [
+  [0x2, 0xfff97272373d413259a46990580e213an], [0x4, 0xfff2e50f5f656932ef12357cf3c7fdccn],
+  [0x8, 0xffe5caca7e10e4e61c3624eaa0941cd0n], [0x10, 0xffcb9843d60f6159c9db58835c926644n],
+  [0x20, 0xff973b41fa98c081472e6896dfb254c0n], [0x40, 0xff2ea16466c96a3843ec78b326b52861n],
+  [0x80, 0xfe5dee046a99a2a811c461f1969c3053n], [0x100, 0xfcbe86c7900a88aedcffc83b479aa3a4n],
+  [0x200, 0xf987a7253ac413176f2b074cf7815e54n], [0x400, 0xf3392b0822b70005940c7a398e4b70f3n],
+  [0x800, 0xe7159475a2c29b7443b29c7fa6e889d9n], [0x1000, 0xd097f3bdfd2022b8845ad8f792aa5825n],
+  [0x2000, 0xa9f746462d870fdf8a65dc1f90e061e5n], [0x4000, 0x70d869a156d2a1b890bb3df62baf32f7n],
+  [0x8000, 0x31be135f97d08fd981231505542fcfa6n], [0x10000, 0x9aa508b5b7a84e1c677de54f3e99bc9n],
+  [0x20000, 0x5d6af8dedb81196699c329225ee604n], [0x40000, 0x2216e584f5fa1ea926041bedfe98n],
+  [0x80000, 0x48a170391f7dc42444e8fa2n],
+];
+function sqrtAtTick(tick) {
+  const abs = Math.abs(tick);
+  let ratio = (abs & 1) ? 0xfffcb933bd6fad37aa2d162d1a594001n : (1n << 128n);
+  for (const [bit, m] of TICK_MULT) if (abs & bit) ratio = (ratio * m) >> 128n;
+  if (tick > 0) ratio = MAX_U256 / ratio;
+  return (ratio >> 32n) + ((ratio & 0xffffffffn) === 0n ? 0n : 1n);
+}
+const divUp = (a, b) => (a + b - 1n) / b;
+
+// Builds an in-range model of a v3 pool. Liquidity is constant only between initialized
+// ticks, which are multiples of tickSpacing, so the current spacing interval is a safe bound.
+function makeV3State(sqrtP, tick, L, spacing, feePpm) {
+  const lower = Math.floor(tick / spacing) * spacing;
+  const upper = lower + spacing;
+  return { sqrtP, tick, L, spacing, feePpm: BigInt(feePpm), sqrtLower: sqrtAtTick(lower), sqrtUpper: sqrtAtTick(upper) };
+}
+// Max gross input that keeps the swap inside the current interval.
+function v3MaxIn(st, zeroForOne) {
+  const { sqrtP, L, sqrtLower, sqrtUpper, feePpm } = st;
+  let net;
+  if (zeroForOne) { if (sqrtP <= sqrtLower) return 0n; net = (L * Q96 * (sqrtP - sqrtLower)) / (sqrtP * sqrtLower); }
+  else { if (sqrtUpper <= sqrtP) return 0n; net = (L * (sqrtUpper - sqrtP)) / Q96; }
+  return (net * PPM) / (PPM - feePpm); // round down → conservative
+}
+// Exact output for an input that stays inside the interval; null if it would cross a tick.
+function v3AmountOut(amountIn, st, zeroForOne) {
+  if (amountIn <= 0n || st.L === 0n) return 0n;
+  if (amountIn > v3MaxIn(st, zeroForOne)) return null;
+  const { sqrtP, L, feePpm } = st;
+  const net = (amountIn * (PPM - feePpm)) / PPM;
+  if (zeroForOne) {
+    const num = L * Q96;
+    const sqrtQ = divUp(num * sqrtP, num + net * sqrtP);
+    return (L * (sqrtP - sqrtQ)) / Q96;
+  } else {
+    const sqrtQ = sqrtP + (net * Q96) / L;
+    return (L * Q96 * (sqrtQ - sqrtP)) / (sqrtQ * sqrtP);
+  }
+}
+
+// ─── Generic leg: quote(amountIn) and maxIn for a pool + direction ────────────
+function makeLeg(pool, tokenIn) {
+  const zeroForOne = tokenIn === pool.token0;
+  if (pool.kind === 'v2') {
+    const [rIn, rOut] = zeroForOne ? [pool.r0, pool.r1] : [pool.r1, pool.r0];
+    return { pool, tokenIn, rIn, rOut, maxIn: rIn / 10n, // cap at 10% of input reserve
+      quote: x => v2AmountOut(x, rIn, rOut, pool.feePpm) };
+  }
+  return { pool, tokenIn, maxIn: v3MaxIn(pool.st, zeroForOne), quote: x => v3AmountOut(x, pool.st, zeroForOne) };
+}
+
+// Mid price (tokenOut per tokenIn, raw units) as a float — display only.
+function midRaw(leg) {
+  const p = leg.pool;
+  if (p.kind === 'v2') return Number(leg.rOut) / Number(leg.rIn);
+  const px = (Number(p.st.sqrtP) / 2 ** 96) ** 2; // token1 per token0
+  return leg.tokenIn === p.token0 ? px : 1 / px;
+}
+
+// Two-leg cycle S→Y on legA, Y→S on legB. Returns optimal size (ternary search on the concave profit curve).
+function evalCycle(legA, legB, amount) {
+  const outA = legA.quote(amount); if (outA === null || outA === 0n) return null;
+  if (outA > legB.maxIn) return null;
+  const outB = legB.quote(outA); if (outB === null) return null;
+  return { amountIn: amount, mid: outA, amountOut: outB, profit: outB - amount };
+}
+function maxCycleInput(legA, legB) {
+  // largest x ≤ legA.maxIn whose leg-A output stays within legB.maxIn (outputs are monotone in x)
+  let lo = 0n, hi = legA.maxIn;
+  const ok = x => { const o = legA.quote(x); return o !== null && o <= legB.maxIn; };
+  if (hi === 0n) return 0n;
+  if (ok(hi)) return hi;
+  for (let i = 0; i < 200 && hi - lo > 1n; i++) { const m = (lo + hi) / 2n; if (ok(m)) lo = m; else hi = m; }
+  return lo;
+}
+function findOptimal(legA, legB) {
+  const xmax = maxCycleInput(legA, legB);
+  if (xmax <= 0n) return null;
+  const p = x => { const r = evalCycle(legA, legB, x); return r ? r.profit : -(1n << 255n); };
+  let lo = 0n, hi = xmax;
+  for (let i = 0; i < 300 && hi - lo > 2n; i++) {
+    const m1 = lo + (hi - lo) / 3n, m2 = hi - (hi - lo) / 3n;
+    if (p(m1) < p(m2)) lo = m1; else hi = m2;
+  }
+  let best = null;
+  for (let x = lo; x <= hi; x++) { const r = evalCycle(legA, legB, x); if (r && (!best || r.profit > best.profit)) best = r; }
+  return best && best.profit > 0n ? { ...best, cap: xmax } : { ...(best || {}), profit: best ? best.profit : 0n, cap: xmax, unprofitable: true };
+}
+
+// ─── Discovery + atomic state fetch ───────────────────────────────────────────
+async function discoverPools(enabled) {
+  const calls = [], meta = [];
+  for (const [a, b] of PAIRS) {
+    const A = TOKENS[a].addr, B = TOKENS[b].addr;
+    for (const [id, v] of Object.entries(V2_VENUES)) {
+      if (!enabled[id]) continue;
+      calls.push({ target: v.factory, data: SEL.getPair + pad32(A) + pad32(B) });
+      meta.push({ kind: 'v2', venue: id, label: v.label, feePpm: v.feePpm, a, b });
+    }
+    if (enabled.liberty_v3) for (const fee of LIB_V3.fees) {
+      calls.push({ target: LIB_V3.factory, data: SEL.getPool + pad32(A) + pad32(B) + u256(fee) });
+      meta.push({ kind: 'v3', venue: 'liberty_v3', label: `${LIB_V3.label} ${fee / 10000}%`, feePpm: BigInt(fee), a, b });
+    }
+  }
+  if (!calls.length) return [];
+  const { results } = await multicall(calls);
+  const pools = [];
+  results.forEach((r, i) => {
+    if (!r.success || r.data.length < 64) return;
+    const addr = '0x' + r.data.slice(24, 64);
+    if (BigInt(addr) === 0n) return;
+    const m = meta[i];
+    const [t0, t1] = sortTokens(TOKENS[m.a].addr, TOKENS[m.b].addr);
+    pools.push({ ...m, address: addr, token0: t0, token1: t1 });
+  });
+  return pools;
+}
+
+async function fetchPoolStates(pools) {
+  const calls = [], idx = [];
+  pools.forEach((p, i) => {
+    if (p.kind === 'v2') { calls.push({ target: p.address, data: SEL.getReserves }); idx.push([i, 'res']); }
+    else {
+      calls.push({ target: p.address, data: SEL.slot0 }); idx.push([i, 'slot0']);
+      calls.push({ target: p.address, data: SEL.liquidity }); idx.push([i, 'liq']);
+      calls.push({ target: p.address, data: SEL.tickSpacing }); idx.push([i, 'ts']);
+    }
+  });
+  const { block, results } = await multicall(calls);
+  const tmp = pools.map(p => ({ ...p }));
+  results.forEach((r, k) => {
+    const [i, f] = idx[k]; const p = tmp[i];
+    if (!r.success) { p.bad = true; return; }
+    if (f === 'res') { p.r0 = wordBig(r.data, 0); p.r1 = wordBig(r.data, 1); p.tsLast = Number(wordBig(r.data, 2)); }
+    if (f === 'slot0') { p.sqrtP = wordBig(r.data, 0); p.tick = wordInt24(r.data, 1); }
+    if (f === 'liq') p.L = wordBig(r.data, 0);
+    if (f === 'ts') p.spacing = Number(wordBig(r.data, 0));
+  });
+  const live = [];
+  for (const p of tmp) {
+    if (p.bad) continue;
+    if (p.kind === 'v2') { if (p.r0 > 0n && p.r1 > 0n) live.push(p); }
+    else if (p.L > 0n && p.spacing > 0) { p.st = makeV3State(p.sqrtP, p.tick, p.L, p.spacing, p.feePpm); live.push(p); }
+  }
+  return { block: Number(block), pools: live };
+}
+
+// ─── Scan: every 2-venue cycle for the chosen start token ─────────────────────
+function scanCycles(pools, startSym, userAmountRaw) {
+  const S = TOKENS[startSym].addr;
+  const byOther = {};
+  for (const p of pools) {
+    if (p.token0 !== S && p.token1 !== S) continue;
+    const other = p.token0 === S ? p.token1 : p.token0;
+    (byOther[other] = byOther[other] || []).push(p);
+  }
+  const rows = [];
+  for (const [Y, list] of Object.entries(byOther)) {
+    for (const pa of list) for (const pb of list) {
+      if (pa === pb) continue;
+      const legA = makeLeg(pa, S), legB = makeLeg(pb, Y);
+      const opt = findOptimal(legA, legB);
+      const user = userAmountRaw > 0n ? evalCycle(legA, legB, userAmountRaw) : null;
+      const midEdge = midRaw(legA) * midRaw(legB) - 1; // gross price gap incl. nothing
+      rows.push({ startSym, otherAddr: Y, legA, legB, opt, user, midEdge,
+        userExceedsCap: userAmountRaw > 0n && !user });
+    }
+  }
+  return rows;
+}
+
+// USD value of 1 WPLS from the deepest WPLS/USDC or WPLS/DAI v2 pool (by stable reserve).
+function wplsUsd(pools) {
+  let best = null;
+  for (const p of pools) {
+    if (p.kind !== 'v2') continue;
+    const syms = [p.a, p.b];
+    if (!syms.includes('WPLS')) continue;
+    const st = syms.find(s => s === 'USDC' || s === 'DAI'); if (!st) continue;
+    const isW0 = p.token0 === TOKENS.WPLS.addr;
+    const rW = isW0 ? p.r0 : p.r1, rS = isW0 ? p.r1 : p.r0;
+    const stableUnits = Number(rS) / 10 ** TOKENS[st].dec;
+    if (!best || stableUnits > best.depth) best = { depth: stableUnits, price: stableUnits / (Number(rW) / 1e18), src: `${p.label} WPLS/${st}` };
+  }
+  return best;
+}
+// USD price for any token via its deepest WPLS pool (v2 only), or 1.0 for the bridged stables' own quote.
+function tokenUsd(sym, pools, wpls) {
+  if (!wpls) return null;
+  if (sym === 'WPLS') return wpls.price;
+  let best = null;
+  for (const p of pools) {
+    if (p.kind !== 'v2' || ![p.a, p.b].includes('WPLS') || ![p.a, p.b].includes(sym)) continue;
+    const isW0 = p.token0 === TOKENS.WPLS.addr;
+    const rW = Number(isW0 ? p.r0 : p.r1) / 1e18, rT = Number(isW0 ? p.r1 : p.r0) / 10 ** TOKENS[sym].dec;
+    if (!best || rW > best.depth) best = { depth: rW, price: (rW / rT) * wpls.price };
+  }
+  return best ? best.price : null;
+}
+
+// ─── LibertySwap bridge API (schema verified with live quotes 2026-11-01) ─────
+const libLimiter = { stamps: [], limit: 30, reserve: 2,
+  take() { const now = Date.now(); this.stamps = this.stamps.filter(t => now - t < 60000);
+    if (this.stamps.length >= this.limit - this.reserve) return false; this.stamps.push(now); return true; } };
+
+async function libertyRouters() {
+  const t0 = Date.now();
+  const r = await fetch(`${LIBERTY_BASE}/app/routers`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  return { latency: Date.now() - t0, routers: j.data || [] };
+}
+// Returns { srcAmount, destAmount, feePct, feeAmount, route } — field names as returned by the API.
+async function libertyQuote(srcSym, dstSym, amountRaw, srcChain, dstChain, recipient) {
+  if (!libLimiter.take()) throw new Error('Local rate-limit guard (30 req/60 s) reached');
+  const q = new URLSearchParams({ srcToken: srcSym, dstToken: dstSym, amount: amountRaw.toString(),
+    srcChain: String(srcChain), dstChain: String(dstChain), recipient: recipient || QUOTE_PLACEHOLDER_RECIPIENT });
+  const t0 = Date.now();
+  const r = await fetch(`${LIBERTY_BASE}/swap/quote?${q}`);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+  return { latency: Date.now() - t0, srcAmount: BigInt(j.srcAmount), destAmount: BigInt(j.destAmount),
+    feePct: j.fee && j.fee.protocol ? j.fee.protocol.percentage : null,
+    feeAmount: j.fee && j.fee.total ? BigInt(j.fee.total.amount) : null,
+    route: j.route && j.route.type, srcToken: j.srcToken, destToken: j.destToken };
+}
+
+// ─── formatting ───────────────────────────────────────────────────────────────
+function fmtUnits(raw, dec, maxFrac = 6) {
+  const neg = raw < 0n; let v = neg ? -raw : raw;
+  const base = 10n ** BigInt(dec);
+  const ip = v / base; let fp = (v % base).toString().padStart(dec, '0').slice(0, maxFrac).replace(/0+$/, '');
+  return (neg ? '-' : '') + ip.toLocaleString('en-US') + (fp ? '.' + fp : '');
+}
+function parseUnits(str, dec) {
+  const s = String(str).trim(); if (!/^\d*(\.\d*)?$/.test(s) || s === '' || s === '.') return 0n;
+  const [i, f = ''] = s.split('.');
+  return BigInt(i || '0') * 10n ** BigInt(dec) + BigInt((f + '0'.repeat(dec)).slice(0, dec) || '0');
+}
+const symOf = addr => Object.keys(TOKENS).find(k => TOKENS[k].addr === addr) || addr.slice(0, 8);
+
+
+// ═════════════════════════════ UI layer ═════════════════════════════
+const $ = id => document.getElementById(id);
+const STALE_MS = 20000;
+const SUS_GAP = 0.5;      // >50% gross mid gap ⇒ suspicious
+const DUST_USD = 25;      // leg capacity below $25 ⇒ dust
+const state = { pools: [], live: [], block: null, snapAt: null, rows: [], wpls: null, discKey: null, timer: null, busy: false };
+
+function switchView(v) {
+  for (const k of ['dashboard', 'companion', 'docs']) {
+    $('view-' + k).classList.toggle('active', k === v);
+    $('nav-' + k).classList.toggle('active', k === v);
+  }
+}
+function badge(cls, txt) { return `<span class="badge badge-${cls}">${txt}</span>`; }
+function showAlert(msg, kind = 'warn') { $('alert-area').innerHTML = `<div class="alert-box alert-${kind}">${msg}</div>`; }
+function clearAlert() { $('alert-area').innerHTML = ''; }
+const fmtUsd = v => v == null || !isFinite(v) ? '—' : (Math.abs(v) >= 1 ? '$' + v.toLocaleString('en-US', { maximumFractionDigits: 2 }) : '$' + v.toPrecision(3));
+const fmtPct = (v, d = 3) => v == null || !isFinite(v) ? '—' : (v * 100).toFixed(d) + '%';
+const short = a => a.slice(0, 6) + '…' + a.slice(-4);
+const toFloat = (raw, dec) => Number(raw) / 10 ** dec;
+
+function enabledVenues() {
+  return { pulsex_v1: $('v-pulsex_v1').checked, pulsex_v2: $('v-pulsex_v2').checked,
+    ninemm_v2: $('v-ninemm_v2').checked, liberty_v3: $('v-liberty_v3').checked };
+}
+
+function updateAge() {
+  if (!state.snapAt) return;
+  const age = Date.now() - state.snapAt;
+  $('tel-age').innerHTML = age > STALE_MS ? badge('stale', `STALE ${Math.round(age / 1000)}s`) : badge('healthy', `${Math.round(age / 1000)}s`);
+}
+
+async function refreshLiberty() {
+  try {
+    const r = await libertyRouters();
+    const pcs = r.routers.filter(x => x.chainId === 369).map(x => x.symbol);
+    $('tel-liberty').innerHTML = badge('healthy', `OK ${r.latency} ms`);
+    $('tel-liberty-detail').textContent = `Routers: ${r.routers.length} · PulseChain: ${pcs.join(', ')}`;
+  } catch (e) {
+    $('tel-liberty').innerHTML = badge('error', 'DOWN');
+    $('tel-liberty-detail').textContent = String(e.message || e);
+  }
+}
+
+// USD capacity of a leg (its max input valued in USD)
+function legCapUsd(leg) {
+  const sym = symOf(leg.tokenIn); const px = tokenUsd(sym, state.live, state.wpls);
+  return px == null ? null : toFloat(leg.maxIn, TOKENS[sym].dec) * px;
+}
+
+async function runScan() {
+  if (state.busy) return; state.busy = true;
+  const btn = $('btn-scan'); btn.disabled = true; btn.textContent = 'Scanning…';
+  try {
+    clearAlert();
+    const en = enabledVenues();
+    const key = JSON.stringify(en);
+    if (key !== state.discKey) { state.pools = await discoverPools(en); state.discKey = key; }
+    if (!state.pools.length) throw new Error('No venues enabled or no pools found.');
+    const { block, pools } = await fetchPoolStates(state.pools);
+    state.block = block; state.live = pools; state.snapAt = Date.now();
+    state.wpls = wplsUsd(pools);
+    $('tel-rpc').innerHTML = badge('healthy', 'OK');
+    $('tel-rpc-latency').textContent = `${rpc.lastLatency} ms · ${activeRpc.replace('https://', '')}`;
+    $('tel-block').textContent = block.toLocaleString('en-US');
+    $('tel-pairs').textContent = `${pools.length} / ${state.pools.length}`;
+    const byV = {}; pools.forEach(p => byV[p.venue] = (byV[p.venue] || 0) + 1);
+    $('tel-pairs-detail').textContent = Object.entries(byV).map(([k, n]) => `${k}:${n}`).join(' · ') + ' (live / discovered)';
+    $('tel-wpls').textContent = state.wpls ? '$' + state.wpls.price.toPrecision(4) : '—';
+    $('tel-wpls-src').textContent = state.wpls ? 'source: ' + state.wpls.src : 'no stable pool';
+    updateAge();
+
+    const S = $('in-start').value, dec = TOKENS[S].dec;
+    const userRaw = parseUnits($('in-size').value, dec);
+    const usdS = tokenUsd(S, pools, state.wpls);
+    const rows = scanCycles(pools, S, userRaw).map(r => {
+      const capA = legCapUsd(r.legA), capB = legCapUsd(r.legB);
+      const dust = (capA != null && capA < DUST_USD) || (capB != null && capB < DUST_USD);
+      const wild = Math.abs(r.midEdge) > SUS_GAP;
+      const prof = r.opt && !r.opt.unprofitable && r.opt.profit > 0n;
+      const profUsd = prof && usdS != null ? toFloat(r.opt.profit, dec) * usdS : (prof ? null : 0);
+      const bps = prof && r.opt.amountIn > 0n ? Number(r.opt.profit * 1000000n / r.opt.amountIn) / 100 : null;
+      return { ...r, capA, capB, dust, wild, suspicious: dust || wild, prof, profUsd, bps };
+    });
+    rows.sort((a, b) => (b.prof ? (b.profUsd ?? 0) + 1e-12 : -1 + b.midEdge / 1e3) - (a.prof ? (a.profUsd ?? 0) + 1e-12 : -1 + a.midEdge / 1e3));
+    state.rows = rows;
+    renderRows();
+    if ($('v-bridge').checked && !state.bridgeDone) { state.bridgeDone = true; runBridge(); }
+  } catch (e) {
+    $('tel-rpc').innerHTML = badge('error', 'ERROR');
+    showAlert('Scan failed: ' + (e.message || e), 'err');
+  } finally { state.busy = false; btn.disabled = false; btn.textContent = 'Scan now'; }
+}
+
+function renderRows() {
+  const S = $('in-start').value, dec = TOKENS[S].dec;
+  const minBps = Number($('in-minbps').value) || 0;
+  const showSus = $('opt-suspicious').checked, onlyProf = $('opt-profitable').checked;
+  let hiddenSus = 0, hiddenProf = 0;
+  const vis = state.rows.filter(r => {
+    if (r.suspicious && !showSus) { hiddenSus++; return false; }
+    if (onlyProf && !(r.prof && r.bps >= minBps)) { hiddenProf++; return false; }
+    return true;
+  });
+  const tb = $('results-body');
+  if (!vis.length) {
+    tb.innerHTML = `<tr><td colspan="9"><div class="empty-state"><h3>No rows to show</h3><p>${state.rows.length} cycles evaluated; ${hiddenSus} hidden as suspicious/dust, ${hiddenProf} below the profit filter.</p></div></td></tr>`;
+  } else {
+    tb.innerHTML = vis.map((r, i) => {
+      const idx = state.rows.indexOf(r);
+      const Y = symOf(r.otherAddr);
+      const o = r.opt;
+      const optCell = !r.prof ? `<span class="small">${o && o.cap > 0n ? 'not profitable at any size' : 'no feasible size'}</span>`
+        : o && o.amountIn !== undefined && o.amountIn > 0n
+        ? `<span class="mono">${fmtUnits(o.amountIn, dec, 4)} ${S}</span><br><span class="mono ${r.prof ? 'profit-positive' : 'profit-negative'}">${r.prof ? '+' : ''}${fmtUnits(o.profit, dec, 6)} ${S}</span>${r.bps != null ? ` <span class="small">(${r.bps.toFixed(2)} bps)</span>` : ''}`
+        : '<span class="small">no feasible size</span>';
+      let userCell;
+      if (r.user) userCell = `<span class="mono ${r.user.profit > 0n ? 'profit-positive' : 'profit-negative'}">${r.user.profit > 0n ? '+' : ''}${fmtUnits(r.user.profit, dec, 6)} ${S}</span>`;
+      else if (r.userExceedsCap) userCell = '<span class="profit-marginal">exceeds safe depth</span>';
+      else userCell = '—';
+      const flags = [];
+      if (r.legA.pool.kind === 'v3' || r.legB.pool.kind === 'v3') flags.push('<span class="flag flag-v3">v3 in-interval (conservative cap)</span>');
+      if (r.wild) flags.push('<span class="flag flag-sus">gap &gt;50% – broken/mispriced pool</span>');
+      if (r.dust) flags.push('<span class="flag flag-sus">dust depth</span>');
+      if (r.prof && r.bps >= minBps && !r.suspicious) flags.push('<span class="flag flag-ok">candidate</span>');
+      return `<tr>
+        <td>${i + 1}</td>
+        <td class="mono">${S} → ${Y} → ${S}</td>
+        <td><span class="route-tag ${r.legA.pool.kind === 'v3' ? 'tag-liberty' : 'tag-amm'}">${r.legA.pool.label}</span> → <span class="route-tag ${r.legB.pool.kind === 'v3' ? 'tag-liberty' : 'tag-amm'}">${r.legB.pool.label}</span></td>
+        <td class="mono ${r.midEdge > 0 ? 'profit-positive' : 'profit-negative'}">${fmtPct(r.midEdge)}</td>
+        <td>${optCell}</td>
+        <td class="mono">${r.prof ? fmtUsd(r.profUsd) : '—'}</td>
+        <td>${userCell}</td>
+        <td>${flags.join('')}</td>
+        <td><button class="sm" onclick="showCompanion(${idx})">Inspect</button></td></tr>`;
+    }).join('');
+  }
+  const nProf = state.rows.filter(r => r.prof && !r.suspicious).length;
+  $('results-summary').textContent = `Block ${state.block}: ${state.rows.length} two-pool cycles evaluated for ${S}; ${nProf} profitable before gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas is not deducted.`;
+}
+
+function legDetail(leg, label) {
+  const p = leg.pool, inSym = symOf(leg.tokenIn);
+  const outSym = symOf(leg.tokenIn === p.token0 ? p.token1 : p.token0);
+  let st;
+  if (p.kind === 'v2') {
+    st = `<div class="detail-row"><span class="dk">Reserve in (${inSym})</span><span class="dv mono">${fmtUnits(leg.rIn, TOKENS[inSym].dec, 4)}</span></div>
+      <div class="detail-row"><span class="dk">Reserve out (${outSym})</span><span class="dv mono">${fmtUnits(leg.rOut, TOKENS[outSym].dec, 4)}</span></div>
+      <div class="detail-row"><span class="dk">Fee</span><span class="dv mono">${Number(p.feePpm) / 1e4}%</span></div>
+      <div class="detail-row"><span class="dk">Max input (10% of reserve)</span><span class="dv mono">${fmtUnits(leg.maxIn, TOKENS[inSym].dec, 4)} ${inSym} (${fmtUsd(legCapUsd(leg))})</span></div>`;
+  } else {
+    st = `<div class="detail-row"><span class="dk">sqrtPriceX96</span><span class="dv mono">${p.sqrtP}</span></div>
+      <div class="detail-row"><span class="dk">tick / spacing</span><span class="dv mono">${p.tick} / ${p.spacing}</span></div>
+      <div class="detail-row"><span class="dk">Active liquidity L</span><span class="dv mono">${p.L}</span></div>
+      <div class="detail-row"><span class="dk">Fee</span><span class="dv mono">${Number(p.feePpm) / 1e4}%</span></div>
+      <div class="detail-row"><span class="dk">Max input inside current interval</span><span class="dv mono">${fmtUnits(leg.maxIn, TOKENS[inSym].dec, 6)} ${inSym} (${fmtUsd(legCapUsd(leg))})</span></div>`;
+  }
+  return `<div class="stat-card"><div class="label">${label}: ${p.label} — ${inSym} → ${outSym}</div>
+    <div class="detail-row"><span class="dk">Pool</span><span class="dv mono"><a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://scan.pulsechain.com/address/${p.address}">${short(p.address)}</a></span></div>${st}</div>`;
+}
+
+function showCompanion(i) {
+  const r = state.rows[i]; if (!r) return;
+  const S = r.startSym, Y = symOf(r.otherAddr), dS = TOKENS[S].dec, dY = TOKENS[Y].dec;
+  const calc = (label, res) => res ? `${label}
+  in        ${fmtUnits(res.amountIn, dS, 8)} ${S}
+  leg A out ${fmtUnits(res.mid, dY, 8)} ${Y}
+  leg B out ${fmtUnits(res.amountOut, dS, 8)} ${S}
+  profit    ${fmtUnits(res.profit, dS, 8)} ${S}  (before gas)` : `${label}\n  not feasible within safe depth`;
+  $('companion-body').className = '';
+  $('companion-body').innerHTML = `
+    <div class="alert-box alert-info">Snapshot block ${state.block}. Route ${S} → ${Y} → ${S}. Mid gap ${fmtPct(r.midEdge)}. ${r.suspicious ? '<b>Flagged suspicious/dust. Do not trade without checking the pool manually.</b>' : ''}</div>
+    <div class="companion-grid">${legDetail(r.legA, 'Leg A (buy ' + Y + ')')}${legDetail(r.legB, 'Leg B (sell ' + Y + ')')}</div>
+    <h2 class="section">Exact integer calculation</h2>
+    <pre class="calc">${r.prof ? calc('Optimal size', r.opt) : 'Optimal size\n  none: the cycle loses money at every size (fees exceed the price gap)'}
+Cycle input cap (both legs within safe depth): ${r.opt ? fmtUnits(r.opt.cap, dS, 8) + ' ' + S : '—'}
+
+${calc('Your size', r.user)}</pre>
+    <div class="small">Execution note: both legs must land in the same block (a contract or bundle) for the profit to hold. On v3, the size is limited to the current tick interval, so real capacity may be larger. Gas is not included.</div>`;
+  switchView('companion');
+}
+
+// ─── LibertySwap bridge price check ───
+function v3MidHuman(p, baseSym) { // price of baseSym in the other token, human units
+  const px01 = (Number(p.sqrtP) / 2 ** 96) ** 2; // raw token1 per raw token0
+  const s0 = symOf(p.token0), s1 = symOf(p.token1);
+  const h01 = px01 * 10 ** (TOKENS[s0].dec - TOKENS[s1].dec);
+  return baseSym === s0 ? h01 : 1 / h01;
+}
+function usdcInDai() { // deepest USDC/DAI pool (v2 by reserve, v3 accepted if no v2)
+  let best = null;
+  for (const p of state.live) {
+    if (![p.a, p.b].includes('USDC') || ![p.a, p.b].includes('DAI')) continue;
+    let price, depth;
+    if (p.kind === 'v2') {
+      const u0 = p.token0 === TOKENS.USDC.addr;
+      const ru = toFloat(u0 ? p.r0 : p.r1, 6), rd = toFloat(u0 ? p.r1 : p.r0, 18);
+      price = rd / ru; depth = ru;
+    } else { price = v3MidHuman(p, 'USDC'); depth = 0; }
+    if (!best || depth > best.depth) best = { price, depth, src: p.label };
+  }
+  return best;
+}
+async function ethUsdRef() {
+  const manual = parseFloat($('in-ethusd').value);
+  if (manual > 0) return { price: manual, src: 'manual' };
+  const r = await fetch('https://api.coinbase.com/v2/prices/ETH-USD/spot');
+  const j = await r.json(); const v = parseFloat(j.data.amount);
+  $('in-ethusd').placeholder = `auto: ${v} (Coinbase)`;
+  return { price: v, src: 'Coinbase spot' };
+}
+async function runBridge() {
+  if (!state.live.length) { await runScan(); if (!state.live.length) return; }
+  const btn = $('btn-bridge'); btn.disabled = true;
+  const tb = $('bridge-body'); tb.innerHTML = '<tr><td colspan="7" class="small">Quoting…</td></tr>';
+  const notional = Number($('in-bridge-usd').value) || 1000;
+  const recip = /^0x[0-9a-fA-F]{40}$/.test($('in-recipient').value.trim()) ? $('in-recipient').value.trim() : undefined;
+  const out = [];
+  for (const sym of ['USDC', 'WETH']) {
+    const cfg = LIB_BRIDGE[sym];
+    try {
+      let pc, ref;
+      if (sym === 'USDC') { const u = usdcInDai(); pc = u ? { price: u.price, src: u.src + ' USDC/DAI' } : null; ref = { price: 1, src: 'USDC = $1' }; }
+      else { const p = tokenUsd('WETH', state.live, state.wpls); pc = p ? { price: p, src: 'via WPLS pools' } : null; ref = await ethUsdRef(); }
+      if (!pc) throw new Error('no PulseChain price for ' + sym);
+      const amtHuman = notional / pc.price;
+      const amtRaw = parseUnits(amtHuman.toFixed(Math.min(TOKENS[sym].dec, 8)), TOKENS[sym].dec);
+      const q = await libertyQuote(cfg.src, cfg.dst, amtRaw, 369, 1, recip);
+      const recv = toFloat(q.destAmount, cfg.dstDec);
+      const usdOut = recv * ref.price;
+      const edge = usdOut / notional - 1;
+      out.push(`<tr><td><span class="route-tag tag-cross">${sym} (PulseChain) → ${cfg.dstLabel}</span><br><span class="small">${q.route || ''} · ${q.latency} ms</span></td>
+        <td class="mono">${fmtUsd(pc.price)}<br><span class="small">${pc.src}</span></td>
+        <td class="mono">${fmtUsd(ref.price)}<br><span class="small">${ref.src}</span></td>
+        <td class="mono">${fmtUnits(q.srcAmount, TOKENS[sym].dec, 6)} → ${fmtUnits(q.destAmount, cfg.dstDec, 6)}</td>
+        <td class="mono">${q.feePct != null ? q.feePct + '%' : '—'}</td>
+        <td class="mono">${fmtUsd(notional)} → ${fmtUsd(usdOut)}</td>
+        <td class="mono ${edge > 0 ? 'profit-positive' : 'profit-negative'}">${fmtPct(edge, 2)}</td></tr>`);
+    } catch (e) {
+      out.push(`<tr><td>${sym} → ${cfg.dstLabel}</td><td colspan="6" class="profit-negative">${e.message || e}</td></tr>`);
+    }
+  }
+  tb.innerHTML = out.join('');
+  btn.disabled = false;
+}
+
+function setAuto() {
+  clearInterval(state.timer);
+  if ($('opt-auto').checked) state.timer = setInterval(runScan, 15000);
+}
+
+async function boot() {
+  $('in-start').innerHTML = Object.keys(TOKENS).map(s => `<option value="${s}">${s} — ${TOKENS[s].name}</option>`).join('');
+  ['opt-profitable', 'opt-suspicious', 'in-minbps'].forEach(id => $(id).addEventListener('change', () => state.rows.length && renderRows()));
+  $('opt-auto').addEventListener('change', setAuto);
+  $('in-start').addEventListener('change', runScan);
+  $('v-bridge').addEventListener('change', () => { $('bridge-section').style.display = $('v-bridge').checked ? '' : 'none'; });
+  setInterval(updateAge, 1000);
+  refreshLiberty();
+  runScan();
+}
+document.addEventListener('DOMContentLoaded', boot);
+</script>
+</body>
+</html>
