@@ -34,6 +34,8 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ---
 
+📘 **Full process manual / white paper:** [WHITEPAPER.md](WHITEPAPER.md)
+
 ## How to use
 
 1. Open **[cryptales.github.io/Arb-Me-Now/](https://cryptales.github.io/Arb-Me-Now/)** — it scans automatically on load.
@@ -68,6 +70,9 @@ All addresses and fees were verified on-chain against live contract data. See th
 ## Changelog
 
 ### v4.4 (2026-11-01)
+- Gas-adjusted net profit (live eth_gasPrice × 250k/350k gas).
+- Process manual: see [WHITEPAPER.md](WHITEPAPER.md).
+- Old dashboard.html / trade-companion.html now redirect to the scanner.
 - Added triangular 3-hop route search (toggle in Settings), with optimal sizing and a three-leg Trade Companion view.
 
 ### v4.3 (2026-11-01)
