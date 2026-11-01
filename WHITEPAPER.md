@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.4)
+# Arb-Me-Now — Process Manual & White Paper (v4.5)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -13,6 +13,7 @@ Arb-Me-Now finds price differences between decentralised exchanges (DEXs) on Pul
 | Layer | What it does |
 |---|---|
 | Data | Public RPC `rpc.pulsechain.com`. All pool states are read in **one** Multicall3 `tryBlockAndAggregate` call (selector `0x399542e9`), so every price comes from the same block. PulseChain RPC rejects JSON-RPC batch requests, so Multicall3 is required. |
+| Tick data (v4.5) | A second Multicall3 call, pinned to the **same block**, reads `ticks(int24)` (selector `0xf30dba93`) for up to 4 initialised-boundary ticks on each side of every v3 pool, giving `liquidityNet` at each crossing. If this read fails, the engine falls back to single-interval maths. |
 | Discovery | `getPair` / `getPool` lookups on each factory for every pair of tokens in the watch list. |
 | Engine | Pure BigInt maths (`engine.js`) with exact integer swap formulas and no floating-point rounding in the money path. It is unit-tested in Node (`test.js`). |
 | UI | A single self-contained `index.html` hosted on GitHub Pages, with no backend. |
@@ -33,11 +34,11 @@ All fees were checked on-chain, not taken from documentation.
 
 ### 3.1 Swap maths
 - **v2 (constant product):** `out = in·(10000−fee)·R_out / (R_in·10000 + in·(10000−fee))`, using integer division the same way the pool contract does.
-- **v3 (concentrated liquidity):** exact swap within the **current tick interval** only, using `sqrtPriceX96` and active liquidity `L`. If a trade would cross into the next tick, it is treated as infeasible. This is deliberately conservative.
+- **v3 (concentrated liquidity, multi-tick since v4.5):** exact swap maths using `sqrtPriceX96` and active liquidity `L`, walking across up to **4 tickSpacing intervals per direction**. When the price crosses a boundary tick, `liquidityNet` is added (moving up) or subtracted (moving down) to get the next interval's `L`. The fee is taken on the gross input. Any trade that would go beyond the last interval read, or into an interval with zero liquidity, is treated as infeasible. If tick data is unavailable, the engine falls back to the conservative single-interval model.
 
 ### 3.2 Safe-depth caps
 - A v2 leg may use at most **10% of the input reserve**.
-- A v3 leg may not move the price beyond the current tick interval.
+- A v3 leg may not move the price beyond the **4th tick interval** read in its direction (or the current interval in single-interval fallback).
 
 ### 3.3 Route types
 1. **Two-pool cycles:** S → Y on pool A, then Y → S on pool B, where A and B are different pools for the same pair.
@@ -67,7 +68,8 @@ For each route, the engine first finds the largest feasible input size by binary
    - Check the **net after gas** line. Gas is estimated from the live `eth_gasPrice` × 250,000 gas (2-hop) or 350,000 gas (3-hop), valued at WPLS/USD. Real gas use depends on your execution contract.
    - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
    - Check the pool addresses on scan.pulsechain.com.
-7. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
+7. **Alerts (v4.5):** tick **🔔 Alert on new profitable route** and allow browser notifications when asked. Pair it with **Auto-refresh every 15 s**. The scanner beeps, shows a banner and sends a notification **once** for each newly profitable route that is ≥ your min bps and still positive after gas (suspicious rows never alert). Alerts only work while the tab stays open.
+8. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
 
 ## 5. Interpreting results
 
@@ -76,7 +78,9 @@ For each route, the engine first finds the largest feasible input size by binary
 | `not profitable at any size` | Fees are larger than the price gap at every size. |
 | `+x TOKEN` profit | Gross profit at the optimal size, before gas. |
 | `net after gas` | Profit in USD minus the estimated gas cost (green = still profitable). |
-| `v3 in-interval (conservative cap)` | Size is limited by the current tick, so the real depth may be larger. |
+| `v3 multi-tick (≤N intervals)` | v3 legs are sized across up to N tick intervals; liquidity beyond that is not modelled. |
+| `v3 in-interval (conservative cap)` | Fallback when tick data could not be read: size limited to the current tick. |
+| 🔔 banner / notification | A new profitable, net-of-gas route ≥ min bps appeared (deduplicated per route). |
 | `3-hop triangular` | Triangular route. Only profitable ones are listed. |
 | Hidden: suspicious/dust | Thin or anomalous pools have been left out for your safety. |
 
@@ -85,7 +89,8 @@ For each route, the engine first finds the largest feasible input size by binary
 ## 6. Risks and limitations
 
 - Gas is an estimate (fixed gas units × live gas price). MEV and pending-block state are not modelled.
-- v3 sizing is limited to the current tick, with no multi-tick crossing.
+- v3 depth is limited to 4 tick intervals per direction; deeper liquidity is not modelled.
+- Alerts run in the browser only: the tab must stay open, and the browser or OS may block notifications or sound.
 - The results are a snapshot. By the time a transaction lands, reserves may have changed.
 - Bridge round-trips are non-atomic and carry price risk.
 - The public RPC can lag or rate-limit you.
@@ -104,9 +109,10 @@ The tool is read-only: it uses only `eth_call` and HTTPS GET requests. There is 
 
 ## 9. Roadmap
 
-Multi-tick v3 crossing · an atomic execution contract (flash-swap) · alerting · more venues and tokens.
+An atomic execution contract (flash-swap) · server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.5:** multi-tick LibertySwap V3 depth (up to 4 intervals per direction, same-block tick reads) and profitability alerts (sound + browser notification, deduplicated).
 - **v4.4:** triangular 3-hop routes, gas-adjusted net profit, separate route counts in the summary, and old pages redirected to the scanner.
 - **v4.3:** live Multicall3 reserves, verified fees, LibertySwap V3 and bridge quotes, and a BigInt engine.
