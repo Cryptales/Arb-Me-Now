@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v5.0.1</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v5.0.2</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v5.0.1 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v5.0.2 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -233,7 +233,7 @@
       <p style="margin:0">Detailed methodology, operating procedure, swap maths, verified fees, risks and version history — <a href="Arb-Me-Now_WhitePaper_v4.4.pdf" target="_blank" rel="noopener" style="color:#f97316;font-weight:600">PDF edition ↗</a> · <a href="WHITEPAPER.md" target="_blank" rel="noopener" style="color:var(--accent-cyan,#58a6ff);font-weight:600">Markdown ↗</a></p>
     </div>
     <div class="docs-section"><h4>📲 New in v5.0: server scanner + Telegram alerts</h4>
-      <p>You no longer need to keep this tab open. The repo's <code>server/scanner.js</code> runs this same engine on an always-on machine (Node 18+, no installs) and messages you on Telegram when a route is profitable after estimated gas. It applies the same suspicious and dust filters and doesn't repeat an alert for the same route within 5 minutes. It only alerts: you still Dry Run and Send here. To set up: create a bot with @BotFather, copy <code>server/config.example.json</code> to <code>config.json</code> and fill it in, test with <code>node server/scanner.js --dry --once</code>, then run <code>node server/scanner.js</code>. Full steps are in <code>server/README.md</code> and White Paper §3.14. <b>New in v5.0.1:</b> each scan also appends the single best route it saw — even when net-negative — to <code>server/scan_log.csv</code>, so you can study near-misses over time.</p>
+      <p>You no longer need to keep this tab open. The repo's <code>server/scanner.js</code> runs this same engine on an always-on machine (Node 18+, no installs) and messages you on Telegram when a route is profitable after estimated gas. It applies the same suspicious and dust filters and doesn't repeat an alert for the same route within 5 minutes. It only alerts: you still Dry Run and Send here. To set up: create a bot with @BotFather, copy <code>server/config.example.json</code> to <code>config.json</code> and fill it in, test with <code>node server/scanner.js --dry --once</code>, then run <code>node server/scanner.js</code>. Full steps are in <code>server/README.md</code> and White Paper §3.14. <b>New in v5.0.1:</b> each scan also appends the single best route it saw — even when net-negative — to <code>server/scan_log.csv</code>, so you can study near-misses over time. <b>v5.0.2:</b> alerts now only fire above <code>min_net_usd</code> net after gas (default $0.50) so hairline-positive ticks don't spam you; the CSV still logs everything.</p>
     </div>
     <div class="docs-section"><h4>📊 Reading the results table (v4.9.4)</h4>
       <ul><li><b>Mid gap:</b> the raw price difference around the cycle, from current pool prices, <i>before</i> fees and price impact. It is the ceiling on profit: if it is smaller than the legs' combined fees, the route can't win at any size.</li>

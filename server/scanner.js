@@ -32,6 +32,7 @@ const {
   start_token       = 'WPLS',      // token to start routes from
   amount_in         = '1000',      // simulated trade size (human units, e.g. "1000" for 1000 WPLS)
   min_profit_bps    = 0,           // minimum gross profit in bps before alerting
+  min_net_usd       = 0.50,        // minimum net-after-gas USD before alerting (CSV still logs everything)
   scan_interval_s   = 30,          // seconds between scans
   dedup_minutes     = 5,           // suppress repeat alerts for the same route
   v3_depth          = 4,           // tick intervals per V3 leg (1–8)
@@ -226,21 +227,25 @@ async function scan() {
       return { r, isTri, suspicious, optProfUsd, bps, gasUnits, gasUsd, optNetUsd, optSizeUsd, fixedProfUsd, fixedNetUsd };
     }).filter(Boolean);
 
-    // 5a. Alert candidates: net-positive after gas, not suspicious, above min bps (behaviour unchanged).
+    // 5a. Alert candidates: net-after-gas >= min_net_usd, not suspicious, above min bps.
+    //     (CSV logging below is independent — it records the best route every scan regardless.)
     const candidates = ann.filter(a =>
       a.r.opt.profit > 0n && !a.suspicious
       && !(min_profit_bps > 0 && (a.bps == null || a.bps < min_profit_bps))
-      && a.optNetUsd != null && a.optNetUsd > 0
+      && a.optNetUsd != null && a.optNetUsd >= min_net_usd
     ).map(a => ({ r: a.r, profUsd: a.optProfUsd, gasUsd: a.gasUsd, netUsd: a.optNetUsd, gasUnits: a.gasUnits, bps: a.bps }));
 
     // 6. Log scan result
     const statusLine = `[${ts}] scan #${scanCount} block ${block}: `
-      + `${allRows.length} routes evaluated, ${candidates.length} net-positive`;
+      + `${allRows.length} routes evaluated, ${candidates.length} alertable (net ≥ $${min_net_usd})`;
     console.log(statusLine);
 
     // 6a. CSV telemetry — the single best route this scan (ranked by gross gap), even when it loses after gas.
     if (CSV_PATH) {
       const gasGwei = gasPrice != null ? Number(gasPrice) / 1e9 : null;
+      // True net-positive count (> $0 after gas), independent of the alert floor, so the column stays honest.
+      const netPosCount = ann.filter(a =>
+        !a.suspicious && a.r.opt.profit > 0n && a.optNetUsd != null && a.optNetUsd > 0).length;
       // "Best" = the biggest real price gap among genuinely executable routes.
       // Non-suspicious 2-hop routes already cleared the engine's ≥$25 leg-liquidity (dust) check,
       // so they qualify at any profitability (these are the near-misses we want).  Triangular routes
@@ -260,13 +265,13 @@ async function scan() {
         const optSize   = (r.opt && r.opt.amountIn != null) ? toFloat(r.opt.amountIn, dec) : null;
         const fixedSize = r.user ? toFloat(r.user.amountIn, dec) : null;
         csvAppend([
-          ts, scanCount, block, csvNum(gasGwei, 3), allRows.length, candidates.length,
+          ts, scanCount, block, csvNum(gasGwei, 3), allRows.length, netPosCount,
           route, best.isTri ? 'tri' : '2hop', pools, csvNum(r.midEdge * 100, 4),
           csvNum(optSize, 4), csvNum(best.optProfUsd, 4), csvNum(best.bps, 2), best.gasUnits, csvNum(best.gasUsd, 4), csvNum(best.optNetUsd, 4),
           csvNum(fixedSize, 4), csvNum(best.fixedProfUsd, 4), csvNum(best.fixedNetUsd, 4),
         ]);
       } else {
-        csvAppend([ts, scanCount, block, csvNum(gasGwei, 3), allRows.length, candidates.length,
+        csvAppend([ts, scanCount, block, csvNum(gasGwei, 3), allRows.length, netPosCount,
           '', '', '', '', '', '', '', '', '', '', '', '', '']);
       }
     }

@@ -15,6 +15,8 @@
 
   "min_profit_bps": 0,
   "_min_profit_bps_help": "Minimum gross profit in basis points of amount_in before alerting. 0 = alert on any net-positive route. 50 = only alert if profit >= 0.5% of trade size.",
+  "min_net_usd": 0.50,
+  "_min_net_usd_help": "Minimum net profit in USD (after estimated gas) before sending a Telegram alert. Default 0.50 filters out hairline-positive ticks. The CSV scan log still records every best route regardless of this floor.",
 
   "scan_interval_s": 30,
   "_scan_interval_help": "Seconds between scans. 30 is a reasonable default; below 10 may hit RPC rate limits.",

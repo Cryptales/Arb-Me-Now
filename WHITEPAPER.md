@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v5.0.1)
+# Arb-Me-Now — Process Manual & White Paper (v5.0.2)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -144,12 +144,12 @@ What this proves: **ZKX can sign and broadcast `execute()` to the contract, and 
 
 ### 3.14 Server scanner and Telegram alerts (v5.0)
 
-Up to v4.9.4 the scanner only ran while the page was open in a browser tab. v5.0 adds **`server/scanner.js`**, a small Node.js program (Node 18 or newer, no npm packages) that runs the *same* engine (`engine.js`, the same file the web page uses) on an always-on machine. It sends a Telegram message whenever a route looks profitable after gas. This release only sends alerts. **It never signs or sends a transaction.** You still trade manually through the Trade Companion, which keeps the safety model unchanged.
+Up to v4.9.4 the scanner only ran while the page was open in a browser tab. v5.0 adds **`server/scanner.js`**, a small Node.js program (Node 18 or newer, no npm packages) that runs the *same* engine (`engine.js`, the same file the web page uses) on an always-on machine. It sends a Telegram message whenever a route looks profitable after gas by at least `min_net_usd` (default **$0.50** since v5.0.2, so hairline-positive ticks worth a few cents don't spam you). This release only sends alerts. **It never signs or sends a transaction.** You still trade manually through the Trade Companion, which keeps the safety model unchanged.
 
 **What one scan does.** It discovers pools on all four venues (PulseX V1, PulseX V2, 9mm V2 and LibertySwap V3), caches the list and refreshes it about every 120 scans. Then it reads every pool's live state in one Multicall3 round trip, fetches `eth_gasPrice`, prices WPLS and the start token in USD, and runs `scanCycles` (2-pool cycles) plus `scanTriangular` (3-hop cycles). Each row is filtered exactly as in the browser:
 - suspicious rows are dropped: any leg with under $25 of safe depth, or a mid gap over 50%;
 - rows below `min_profit_bps` are dropped (gross bps at the optimal size);
-- only rows whose **net USD after estimated gas is above zero** remain.
+- only rows whose **net USD after estimated gas is at least `min_net_usd`** (default $0.50) remain for alerting.
 
 **Scan log (v5.0.1).** Alerts only fire on net-positive routes, but the interesting learning is in the near-misses. So from v5.0.1 the scanner appends one row per scan to `server/scan_log.csv` recording the single *best* route that scan — the executable route with the largest mid-price gap — **even when it is net-negative after gas**. "Executable" excludes dust mirages: non-suspicious 2-pool rows (already past the $25 safe-depth floor) plus triangular rows whose optimal size is at least $25. Each row carries the timestamp, scan and block number, gas price, how many routes were evaluated, the route and its pools, the mid gap, the optimal size and its gross/net USD and bps, the gas estimate, and the profit at your fixed trade size. The file is git-ignored and controlled by `csv_log` / `csv_path` in `config.json` (on by default). Over days this builds a dataset of how close the market comes to a profitable cycle, which venues and pairs dominate the near-misses, and what gas levels would tip them positive — the raw material for tuning sizing, venue selection and the eventual keeper.
 
@@ -274,6 +274,7 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 10. Version history
 
+- **v5.0.2:** Alert floor in USD (§3.14). New `min_net_usd` config option (default **$0.50**) gates Telegram alerts on net profit after gas, so hairline-positive routes worth a few cents no longer fire. First live alert (WPLS→WETH→WPLS, net $0.117) prompted this. The CSV scan log is unaffected — it still records the best route every scan regardless of the floor, and the `net_positive` column still counts truly net-positive routes. Tested live.
 - **v5.0.1:** Scan-log CSV (§3.14). The server scanner now appends one row per scan to `server/scan_log.csv` recording the single best *executable* route that scan — the largest mid-gap route that clears the dust floors — even when it is net-negative after gas. 19 columns (timestamp, scan, block, gas price, routes evaluated, route + pools, mid gap, optimal size/gross/net/bps, gas estimate, profit at fixed size). Git-ignored; toggled by `csv_log` / `csv_path` in `config.json` (on by default). Alert logic unchanged — this only writes a near-miss history for later analysis. Tested live: rows append once per scan.
 - **v5.0:** Server scanner + Telegram alerts (§3.14). New `server/` folder: `scanner.js` runs the same engine on an always-on machine and sends a Telegram alert for every route that is net-positive after gas and not suspicious, de-duplicated per route. It only alerts and never trades. `--dry --once` lets you test without Telegram. Live dry-run scan tested (200 routes, 0 net-positive); real Telegram delivery not yet tested.
 - **v4.9.4:** Documentation release. New §5.1, *Reading the results table*: every column explained (mid gap, optimal size → profit, profit USD + net after gas, at your size, flags with exact labels), the profit curve with a worked example, and the scan-timing, safe-depth and optimum-shift details. Matching in-app Docs section and README section. No scanner logic changed.

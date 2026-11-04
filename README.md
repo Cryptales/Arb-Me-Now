@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.0.1
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.0.2
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -98,6 +98,11 @@ The full explanation with a worked example is in the white paper, §5.1.
 ---
 
 ## Changelog
+
+### v5.0.2 (2026-11-04)
+- **Alert floor in USD.** New `min_net_usd` config option (default **$0.50**) sets the minimum net-after-gas profit a route must clear before a Telegram alert fires, so hairline-positive routes worth only a few cents no longer ping you. Prompted by the first live alert (WPLS→WETH→WPLS, net $0.117).
+- The CSV scan log is **unchanged** — it still records the single best route every scan regardless of this floor, and the `net_positive` column still counts truly net-positive routes (>$0), independent of the alert threshold.
+- Tested live; scanner restarted. White paper §3.14 + history and config example updated; PDF regenerated.
 
 ### v5.0.1 (2026-11-04)
 - **Scan-log CSV.** The server scanner now appends one row per scan to `server/scan_log.csv` recording the single best *executable* route that scan — the largest mid-gap route that clears the dust floors — even when it is net-negative after gas. 19 columns: timestamp, scan, block, gas price, routes evaluated, route + pools, mid gap, optimal size/gross/net/bps, gas estimate, and profit at your fixed trade size.
