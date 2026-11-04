@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.9.3
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.9.4
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -47,6 +47,18 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ---
 
+## Reading the results table
+
+| Column | What it means |
+|---|---|
+| **Mid gap** | Raw price difference around the cycle from current pool prices, *before* fees and price impact. It is the ceiling on profit: if it is below the legs' combined fees, the route can't be profitable at any size. |
+| **Optimal size → profit** | The input that maximises gross profit (exact pool maths, fees included, within safe-depth caps), then the profit at that size in the start token and in bps. |
+| **Profit (USD)** | Optimal-size profit in USD. The **net after gas** line under it subtracts estimated gas and is based on the *optimal* size. |
+| **At your size** | The same calculation on your exact *Your trade size*. Profit rises with size, peaks at the optimum, then falls as your own price impact grows, so this approaches the optimal profit as your size approaches the optimal size. It updates on the next scan. `exceeds safe depth` = beyond a leg's cap. |
+| **Flags** | `candidate`, `3-hop triangular`, `v3 multi-tick (≤N intervals)`, `v3 in-interval (conservative cap)`; suspicious and hidden by default: `dust depth`, `gap >50%`. |
+
+The full explanation with a worked example is in the white paper, §5.1.
+
 ## Limitations
 
 - **2-pool round trips** and **triangular 3-hop routes** (S → Y → Z → S over three distinct pools) are checked. Triangular legs use the 10% reserve cap (v2) and multi-tick depth (v3); only profitable triangular routes are listed.
@@ -70,6 +82,10 @@ All addresses and fees were verified on-chain against live contract data. See th
 ---
 
 ## Changelog
+
+### v4.9.4 (2026-11-04)
+- **Docs: Reading the results table**: every results column explained (mid gap, optimal size → profit, profit USD + net after gas, at your size, flags with their exact labels), plus the profit-curve explanation of why *At your size* changes as your size approaches the optimum. Added to white paper §5.1 (with a worked example), the in-app Docs tab and this README. No scanner logic changed.
+- White paper v4.9.4 + PDF regenerated.
 
 ### v4.9.3 (2026-11-04)
 - **Gas model recalibrated on mainnet**: the per-route base rises from 150k to 210k; the costs per V2 hop (140k) and per V3 hop (230k) are unchanged. The V2×3 estimate is now 630k, against 627,914 measured on the first mainnet dry run (it was 570k, ~9% low). Every net-after-gas figure is now a little more conservative.

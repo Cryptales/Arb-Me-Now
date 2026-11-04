@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9.3</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9.4</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.9.3 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.9.4 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -232,6 +232,13 @@
       <h4 style="margin:0 0 0.4rem">📘 Full Process Manual &amp; White Paper</h4>
       <p style="margin:0">Detailed methodology, operating procedure, swap maths, verified fees, risks and version history — <a href="Arb-Me-Now_WhitePaper_v4.4.pdf" target="_blank" rel="noopener" style="color:#f97316;font-weight:600">PDF edition ↗</a> · <a href="WHITEPAPER.md" target="_blank" rel="noopener" style="color:var(--accent-cyan,#58a6ff);font-weight:600">Markdown ↗</a></p>
     </div>
+    <div class="docs-section"><h4>📊 Reading the results table (v4.9.4)</h4>
+      <ul><li><b>Mid gap:</b> the raw price difference around the cycle, from current pool prices, <i>before</i> fees and price impact. It is the ceiling on profit: if it is smaller than the legs' combined fees, the route can't win at any size.</li>
+        <li><b>Optimal size → profit:</b> the input that maximises gross profit (exact pool maths, fees included, within safe-depth caps). The top line is the size; below it are the profit in the start token and its bps of input.</li>
+        <li><b>Profit (USD):</b> optimal-size profit in USD. The small <b>net after gas</b> line subtracts estimated gas (live gas price × "(~Nk gas)"). It is based on the <i>optimal</i> size.</li>
+        <li><b>At your size:</b> the same calculation on the exact amount in <i>Your trade size</i>. Profit rises with size, peaks at the optimal size, then falls as your own price impact grows. Moving your size toward the optimum makes this climb toward the optimal profit. It updates on the next scan. <code>exceeds safe depth</code> = beyond a leg's cap (10% of V2 reserve, or the V3 tick intervals read).</li>
+        <li><b>Flags:</b> <code>candidate</code> (profitable, ≥ min bps, not suspicious; gas not checked), <code>3-hop triangular</code>, <code>v3 multi-tick (≤N intervals)</code>, <code>v3 in-interval (conservative cap)</code>, and the suspicious ones hidden by default: <code>dust depth</code> (a leg absorbs &lt; ~$25) and <code>gap &gt;50%</code> (broken or mispriced pool).</li>
+        <li>Full explanation with a worked example: white paper §5.1.</li></ul></div>
     <div class="docs-section"><h4>What this scanner does</h4>
       <p>For the chosen start token S, the scanner finds every pool S/Y across the enabled venues. It evaluates each two-pool cycle S → Y (buy pool) → S (sell pool) with exact integer (BigInt) AMM math. It reports the gross mid-price gap, the optimal input size and the profit at that size, and the result at your own size. Gas is <b>not</b> deducted, because it depends on your wallet and how you execute.</p></div>
     <div class="docs-section"><h4>Data pipeline (as implemented)</h4>

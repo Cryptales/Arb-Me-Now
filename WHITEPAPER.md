@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.9.3)
+# Arb-Me-Now — Process Manual & White Paper (v4.9.4)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -162,11 +162,56 @@ What this proves: **ZKX can sign and broadcast `execute()` to the contract, and 
 
 ## 5. Interpreting results
 
+### 5.1 Reading the results table (v4.9.4)
+
+Each row is one route: a 2-pool cycle (S → Y → S) or a triangular 3-hop route (S → Y → Z → S). The first three columns are **#** (rank), **Cycle** (the token path) and **Buy leg → Sell leg** (the pools, in order). The other five columns work like this.
+
+**Mid gap.** This is the raw price difference around the cycle, read from each pool's current state (V2 reserves, V3 `sqrtPriceX96`). It is calculated as the product of the leg mid-prices minus 1. It is **before DEX fees and before any price impact**, so it is the ceiling on what the route could ever earn. If the mid gap is smaller than the combined fees of the legs (for example, two PulseX hops = 0.58%), the route can't be profitable at any size, and the next column says so. Green means a positive gap; red means negative.
+
+**Optimal size → profit.** The scanner solves for the input amount that **maximises gross profit**, using the exact pool maths (BigInt, fees included). It searches within the safe-depth caps (§3.2, §3.4). The top line is that amount; the bottom line is the gross profit at that amount in the start token, followed by the return in basis points of input. When no size makes a profit, the cell reads `not profitable at any size`. When the caps leave no room for a trade, it reads `no feasible size`.
+
+**Profit (USD).** The optimal-size profit converted to USD at the live token price. The small line under it, **net after gas**, subtracts the estimated gas cost: live `eth_gasPrice` × the route's gas estimate (§3.12), shown as "(~Nk gas)". **Net after gas is based on the optimal size**, not on your size. Green means it stays positive after gas.
+
+**At your size.** The same full calculation, run on the exact amount in **Your trade size (start token)**. The top-line result is gross profit in the start token. The cell shows `exceeds safe depth` if your amount is beyond a leg's cap, or `—` if the size is 0.
+
+**Flags.** These are labels the scanner attaches to a row:
+
+| Flag | Meaning |
+|---|---|
+| `candidate` | Profitable at the optimal size, at or above your min-bps, and not suspicious. Gas is not checked here; read the net-after-gas line. |
+| `3-hop triangular` | A triangular route through three distinct pools. |
+| `v3 multi-tick (≤N intervals)` | A V3 leg was sized across up to N tick intervals (adaptive depth, §3.9). Liquidity beyond them is not modelled. |
+| `v3 in-interval (conservative cap)` | Tick data could not be read, so the V3 leg is limited to the current tick. |
+| `dust depth` | A leg can absorb less than about $25. Suspicious; hidden unless *Show suspicious* is ticked. |
+| `gap >50% – broken/mispriced pool` | The mid gap is above 50%, which nearly always means a broken, abandoned or mispriced pool. Suspicious; hidden by default. |
+
+#### The profit curve: why *At your size* moves with your input
+
+Profit depends on trade size, and it rises and then falls. A small trade barely moves the pools, so it captures most of the gap, but on a small amount. As the size grows, your own trade pushes each pool's price against you (price impact), so each extra token earns less. The **optimal size** is the peak, where one more token's gain equals the impact it causes. Past it, profit shrinks and eventually turns negative. So as you move *Your trade size* toward the optimal size, *At your size* climbs toward the optimal profit. It matches it when the two sizes are equal, and falls again if you go bigger.
+
+| Your size | At your size (illustrative numbers) |
+|---|---:|
+| 100 WPLS | +2.1 |
+| 500 WPLS | +7.9 |
+| 1,300 WPLS (optimal) | **+11.4** (peak) |
+| 2,000 WPLS | +8.6 |
+| 3,500 WPLS | −4.0 |
+
+Three details:
+
+1. **The column updates on the next scan, not as you type.** Your size is read when a scan runs: when you click Scan, or every 15 s with Auto-refresh.
+2. **`exceeds safe depth`.** V2 legs are capped at 10% of the input reserve, and V3 legs at the tick intervals read. Past a cap the scanner shows the warning instead of guessing a profit.
+3. **The optimum can shift slightly between scans.** Your size sets how many V3 tick intervals are read (§3.9), and reserves change every block.
+
+Gas costs about the same at any size, so trading near the optimum gives a route its best chance of covering gas. The dry run's measured `eth_estimateGas` and net after gas (§3.12) still decide whether a trade is worth sending.
+
+### 5.2 Other displays
+
 | Display | Meaning |
 |---|---|
 | `not profitable at any size` | Fees are larger than the price gap at every size. |
 | `+x TOKEN` profit | Gross profit at the optimal size, before gas. |
-| `net after gas` | Profit in USD minus the estimated gas cost (green = still profitable). |
+| `net after gas` | Optimal-size profit in USD minus the estimated gas cost (green = still profitable). |
 | `v3 multi-tick (≤N intervals)` | v3 legs are sized across up to N tick intervals; liquidity beyond that is not modelled. |
 | `v3 in-interval (conservative cap)` | Fallback when tick data could not be read: size limited to the current tick. |
 | `✅ Would succeed` / `❌ Would revert NoProfit` | ArbExecutor dry-run result at the latest block. |
@@ -204,6 +249,7 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 10. Version history
 
+- **v4.9.4:** Documentation release. New §5.1, *Reading the results table*: every column explained (mid gap, optimal size → profit, profit USD + net after gas, at your size, flags with exact labels), the profit curve with a worked example, and the scan-timing, safe-depth and optimum-shift details. Matching in-app Docs section and README section. No scanner logic changed.
 - **v4.9.3:** Gas model recalibrated on mainnet. The per-route base rises from 150k to 210k (V2 and V3 hop costs unchanged), so the V2 × 3 estimate is now 630k vs 627,914 measured. Every net-after-gas figure is slightly more conservative.
 - **v4.9.2:** First mainnet deploy recorded (ArbExecutor `0xd5da…30bd`, owner verified). The live test from ZKX reached the contract but reverted `Expired()` after landing ~16.6 min late (9.73 PLS gas). Calldata deadline raised from 120 s to 600 s. Dry-run gas was 627,914 vs the 570k model estimate.
 - **v4.9.1:** Gas model recalibrated from fork measurements: per-route 150k base + 140k per V2 hop + 230k per V3 hop (was flat 250k/350k, ~2.2× too low for V3 routes). Dry run now shows measured `eth_estimateGas`, PLS/USD cost and net-after-gas.
