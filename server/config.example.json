@@ -1,0 +1,33 @@
+{
+  "_comment": "Copy this file to config.json and fill in your values. config.json is gitignored.",
+
+  "telegram_bot_token": "YOUR_BOT_TOKEN_HERE",
+  "_bot_token_help": "Get one from @BotFather on Telegram: /newbot, then copy the token it gives you.",
+
+  "telegram_chat_id": "YOUR_CHAT_ID_HERE",
+  "_chat_id_help": "Send any message to your bot, then open https://api.telegram.org/bot<TOKEN>/getUpdates in your browser. Look for 'chat':{id:...}",
+
+  "start_token": "WPLS",
+  "_start_token_help": "Token to scan routes from. Options: WPLS, HEX, eHEX, INC, WETH, PLSX, pDAI, DAI, USDC",
+
+  "amount_in": "1000",
+  "_amount_in_help": "Simulated trade size in human units (e.g. 1000 = 1000 WPLS). The flash swap borrows this amount; you do not need to hold it.",
+
+  "min_profit_bps": 0,
+  "_min_profit_bps_help": "Minimum gross profit in basis points of amount_in before alerting. 0 = alert on any net-positive route. 50 = only alert if profit >= 0.5% of trade size.",
+
+  "scan_interval_s": 30,
+  "_scan_interval_help": "Seconds between scans. 30 is a reasonable default; below 10 may hit RPC rate limits.",
+
+  "dedup_minutes": 5,
+  "_dedup_help": "Suppress repeat Telegram alerts for the same route for this many minutes.",
+
+  "v3_depth": 4,
+  "_v3_depth_help": "V3 tick intervals to read per pool (1-8). Higher = more accurate for large trades but more RPC calls. 4 matches the browser default.",
+
+  "do_triangular": true,
+  "_triangular_help": "Also scan triangular 3-hop routes (S -> Y -> Z -> S). Doubles scan time slightly.",
+
+  "rpc_urls": ["https://rpc.pulsechain.com"],
+  "_rpc_help": "PulseChain RPC endpoint(s). The first one is used. Add a backup as a second element if you have one."
+}

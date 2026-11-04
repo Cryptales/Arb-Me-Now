@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.9.4)
+# Arb-Me-Now — Process Manual & White Paper (v5.0)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -142,6 +142,29 @@ What this proves: **ZKX can sign and broadcast `execute()` to the contract, and 
 
 **Change in v4.9.2:** the calldata deadline is now **now + 600 s**. The deadline is a safety net against stale prices, and `minProfit` still protects every trade, so the longer window doesn't add price risk to a trade that still meets min profit. Procedure: dry-run, click Send, and approve the wallet pop-up straight away. If it sat for more than a few minutes, reject it and rebuild.
 
+### 3.14 Server scanner and Telegram alerts (v5.0)
+
+Up to v4.9.4 the scanner only ran while the page was open in a browser tab. v5.0 adds **`server/scanner.js`**, a small Node.js program (Node 18 or newer, no npm packages) that runs the *same* engine (`engine.js`, the same file the web page uses) on an always-on machine. It sends a Telegram message whenever a route looks profitable after gas. This release only sends alerts. **It never signs or sends a transaction.** You still trade manually through the Trade Companion, which keeps the safety model unchanged.
+
+**What one scan does.** It discovers pools on all four venues (PulseX V1, PulseX V2, 9mm V2 and LibertySwap V3), caches the list and refreshes it about every 120 scans. Then it reads every pool's live state in one Multicall3 round trip, fetches `eth_gasPrice`, prices WPLS and the start token in USD, and runs `scanCycles` (2-pool cycles) plus `scanTriangular` (3-hop cycles). Each row is filtered exactly as in the browser:
+- suspicious rows are dropped: any leg with under $25 of safe depth, or a mid gap over 50%;
+- rows below `min_profit_bps` are dropped (gross bps at the optimal size);
+- only rows whose **net USD after estimated gas is above zero** remain.
+
+Gas uses the v4.9.3 calibration: 210k base + 140k per V2 hop + 230k per V3 hop, priced at the live gas price.
+
+**De-duplication.** The same route (venue legs plus tokens) is alerted at most once every `dedup_minutes` (default 5), so a gap that lasts several blocks doesn't spam you.
+
+**The alert message** shows the route, the pools for each leg, the mid gap, the optimal size, gross profit (in tokens, bps and USD), estimated gas and the net after gas, plus a link to the live site. The procedure is unchanged from §4: open the site, scan, check the row, Dry Run, then Send only if the dry run passes.
+
+**Configuration** lives in `server/config.json`, which is git-ignored, so your bot token never gets committed. You create it by copying `config.example.json`. Fields: `telegram_bot_token` (from @BotFather), `telegram_chat_id`, `start_token`, `amount_in`, `min_profit_bps`, `scan_interval_s` (default 30), `dedup_minutes`, `v3_depth`, `do_triangular` and `rpc_urls`.
+
+**Commands.** `node server/scanner.js` runs continuously. `node server/scanner.js --dry --once` runs a single scan and prints any alerts in the terminal instead of sending them; it needs no Telegram setup. Use it to check the install first. The full setup steps are in `server/README.md`.
+
+**Where to run it.** It has to run somewhere that stays on: your own PC (in `screen`/`tmux`), a small VPS, or under `pm2`. A browser tab or a sleeping laptop will miss gaps.
+
+**Tested so far (2026-11-04):** one live dry-run scan at block 27,970,424 evaluated 200 routes for 1,000 WPLS and found 0 net-positive, which matches the browser results that day. A real Telegram delivery has **not** been tested yet, because that needs your own bot token. Do the first live check with a test message after setup.
+
 ## 4. Operating Procedure (step by step)
 
 1. Open https://cryptales.github.io/Arb-Me-Now/.
@@ -245,10 +268,11 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 9. Roadmap
 
-~~first mainnet deploy~~ (done, §3.13) · first profitable live trade when a net-positive route appears · v4.10 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
+~~first mainnet deploy~~ (done, §3.13) · first profitable live trade when a net-positive route appears · v4.10 private/bundled submission (MEV protection) · ~~v5.0 server-side Telegram alerts~~ (done, §3.14) · v5.1 keeper role + automatic execution of alerted routes · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
 
 ## 10. Version history
 
+- **v5.0:** Server scanner + Telegram alerts (§3.14). New `server/` folder: `scanner.js` runs the same engine on an always-on machine and sends a Telegram alert for every route that is net-positive after gas and not suspicious, de-duplicated per route. It only alerts and never trades. `--dry --once` lets you test without Telegram. Live dry-run scan tested (200 routes, 0 net-positive); real Telegram delivery not yet tested.
 - **v4.9.4:** Documentation release. New §5.1, *Reading the results table*: every column explained (mid gap, optimal size → profit, profit USD + net after gas, at your size, flags with exact labels), the profit curve with a worked example, and the scan-timing, safe-depth and optimum-shift details. Matching in-app Docs section and README section. No scanner logic changed.
 - **v4.9.3:** Gas model recalibrated on mainnet. The per-route base rises from 150k to 210k (V2 and V3 hop costs unchanged), so the V2 × 3 estimate is now 630k vs 627,914 measured. Every net-after-gas figure is slightly more conservative.
 - **v4.9.2:** First mainnet deploy recorded (ArbExecutor `0xd5da…30bd`, owner verified). The live test from ZKX reached the contract but reverted `Expired()` after landing ~16.6 min late (9.73 PLS gas). Calldata deadline raised from 120 s to 600 s. Dry-run gas was 627,914 vs the 570k model estimate.

@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.9.4
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.0
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -47,6 +47,18 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ---
 
+## Server scanner + Telegram alerts (v5.0)
+
+`server/scanner.js` runs the same engine 24/7 on your own always-on machine and pings you on Telegram when a route is net-positive after estimated gas. It **only alerts and never trades**: you still Dry Run and Send in the Trade Companion. Quick start (Node 18+, no npm install):
+
+```
+cp server/config.example.json server/config.json   # add your @BotFather token + chat ID
+node server/scanner.js --dry --once                # one test scan; prints alerts, sends nothing
+node server/scanner.js                             # run continuously (use screen/tmux/pm2 or a VPS)
+```
+
+`config.json` is git-ignored, so your token stays private. Full guide: [server/README.md](server/README.md) · White Paper §3.14.
+
 ## Reading the results table
 
 | Column | What it means |
@@ -76,12 +88,20 @@ The full explanation with a worked example is in the white paper, §5.1.
 |---|---|
 | `index.html` | The complete scanner (single self-contained file — CSS, engine, and UI all inlined) |
 | `README.md` | This file |
+| `engine.js` | Scanner engine (also inlined in index.html); used by the server scanner |
+| `server/` | v5.0 server scanner + Telegram alerts (`scanner.js`, `config.example.json`, `README.md`) |
 
 `dashboard.html` and `trade-companion.html` are older files kept for reference only. Use `index.html`.
 
 ---
 
 ## Changelog
+
+### v5.0 (2026-11-04)
+- **New `server/` folder: server scanner + Telegram alerts.** `scanner.js` reuses `engine.js` on Node 18+ with no dependencies. It scans all four venues (2-pool and triangular cycles), applies the browser's suspicious/dust filters and the v4.9.3 gas model, and alerts only on routes that are net-positive after gas, de-duplicated per route (default 5 min).
+- `--dry` prints alerts to the terminal instead of Telegram; `--once` runs a single scan. Live dry-run scan tested: 200 routes evaluated at block 27,970,424, 0 net-positive. Real Telegram delivery not yet tested (needs your bot token).
+- Alerts only: no signing, no keys on the server. Keeper and auto-execution are planned next (v5.1).
+- White paper §3.14, roadmap and history updated; PDF regenerated. In-app Docs note added.
 
 ### v4.9.4 (2026-11-04)
 - **Docs: Reading the results table**: every results column explained (mid gap, optimal size → profit, profit USD + net after gas, at your size, flags with their exact labels), plus the profit-curve explanation of why *At your size* changes as your size approaches the optimum. Added to white paper §5.1 (with a worked example), the in-app Docs tab and this README. No scanner logic changed.

@@ -70,7 +70,7 @@ cover_svg = '''
 html = f'''<!doctype html><html><head><meta charset="utf-8"><style>
 @page {{ size: A4; margin: 22mm 18mm 20mm 18mm;
   @top-left {{ content: "Arb-Me-Now · Process Manual & White Paper"; font: 8pt 'DejaVu Sans'; color:#64748b; }}
-  @top-right {{ content: "v4.9.4 · November 2026"; font: 8pt 'DejaVu Sans'; color:#64748b; }}
+  @top-right {{ content: "v5.0 · November 2026"; font: 8pt 'DejaVu Sans'; color:#64748b; }}
   @bottom-center {{ content: counter(page) " / " counter(pages); font: 8pt 'DejaVu Sans'; color:#64748b; }}
   @bottom-left {{ content: "cryptales.github.io/Arb-Me-Now"; font: 7.5pt 'DejaVu Sans Mono'; color:#94a3b8; }}
 }}
@@ -126,7 +126,7 @@ li {{ margin:0.8mm 0; }}
     <span class="chip">PulseX v1 · v2</span><span class="chip">9mm v2</span><span class="chip">LibertySwap V3</span>
     <span class="chip">2-pool + triangular</span><span class="chip">BigInt engine</span><span class="chip">read-only</span>
   </div>
-  <div class="foot"><span class="r">cryptales.github.io/Arb-Me-Now</span><b>Version 4.9.4</b> · November 2026 · Analysis tool, not financial advice</div>
+  <div class="foot"><span class="r">cryptales.github.io/Arb-Me-Now</span><b>Version 5.0</b> · November 2026 · Analysis tool, not financial advice</div>
 </section>
 <section class="tocpage">
   <h2>Contents</h2>
