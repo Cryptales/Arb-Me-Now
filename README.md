@@ -71,6 +71,11 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Changelog
 
+### v4.8.1 (2026-11-03)
+- Trade Companion: opt-in 🔎 **Check with Piteas** — compares the route with the Piteas aggregator's whole-market round trip (2 quotes, local cap 6 req/min, clear "Piteas unavailable" message on errors). Read-only; the scanner never depends on Piteas.
+- Tide (seen in Piteas routes) identified on-chain as a Balancer-V3-style weighted pool (RISKOFF: HEX/INC/CST/PLSX/WPLS, 5/5/80/5/5 %, 0.30 % fee, small balances). Not scanned yet; documented.
+- White paper v4.8.1 (new §3.10, §4 step 9, §7, roadmap incl. keeper role, history) + PDF regenerated.
+
 ### v4.8 (2026-11-01)
 - Adaptive V3 tick depth: each LibertySwap V3 pool reads only as many tick intervals as the trade size needs (capacity-based, min 2), capped by a new **V3 tick depth** slider (1–8, default 4). Same-block Multicall3 reads; telemetry shows the depth range used.
 - Live check: 1k WPLS → 2 intervals on deep pools; 10⁸ WPLS → 6–8; cap 1 → single-interval.

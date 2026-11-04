@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.8)
+# Arb-Me-Now — Process Manual & White Paper (v4.8.1)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -70,6 +70,15 @@ Trade Companion's opt-in **Connect & Send** uses the injected EIP-1193 wallet (M
 ### 3.9 Adaptive tick depth (v4.8)
 For each V3 pool the engine first computes the current interval's capacity *C* in start-token (S) units: the smaller of `v3MaxIn` with S as input and `v3MaxIn` with the other token as input, converted to S at the pool's sqrtPrice. It then reads `d = clamp(⌊size / C⌋ + 2, 2, cap)` tick intervals per direction, where *cap* is the user's slider value (1–8; cap 1 means single-interval maths). Pools that do not contain S (middle legs of 3-hop routes) read the full cap. Live check (2026-11-01, WPLS start): at 1,000 WPLS deep pools read 2 intervals; at 10⁸ WPLS they read 6–8; with cap 1 every pool reads 1.
 
+### 3.10 Piteas cross-check and the Tide venue (v4.8.1)
+**Piteas** (piteas.io) is a DEX *aggregator*, not a DEX: it holds no liquidity and routes swaps across PulseChain venues through its router `0x6BF2…88A6`. Trade Companion's opt-in **Check with Piteas** button asks `GET https://sdk.piteas.io/quote` for the cycle's first hop (S → first intermediate token, at your input size) and then the way back (intermediate → S), i.e. 2 requests. It shows both outputs, the venues used, and the Piteas round trip against your input and against our route's output:
+- **Piteas round trip ≥ our route:** the gap is likely available market-wide, so other traders can take it too.
+- **Our route beats it:** the gap looks specific to the pools we found.
+
+Piteas allows **10 requests per minute** (going over can block the IP for an hour) and states the API is not meant for arbitrage bots. So the check is manual only, capped locally at 6 requests per rolling 60 s, and never part of the automatic scan. The scanner does not depend on Piteas; if the API is down (it returned HTTP 500 for a period on 3 Nov 2026), the panel shows "Piteas unavailable" and everything else keeps working. Piteas quotes cannot be an ArbExecutor leg: they have no flash callback, and their calldata is built off-chain for one exact amount.
+
+**Tide** appeared in a Piteas route. On-chain inspection (3 Nov 2026) shows the pool `0x6926…E38B` ("RISKOFF") is a **Balancer V3-style weighted pool**, not a Uniswap-style pair: it exposes `getVault()` (vault `0x634f…4b2d`), `onSwap`, `getWeightedPoolImmutableData` and `getCurrentLiveBalances`, and reverts on `getReserves()`. It holds 5 tokens (HEX, INC, CST, PLSX, WPLS) at weights 5/5/80/5/5 %, with a 0.30 % swap fee. Its live balances were small (≈14.8k HEX, 74 INC, 61k CST, 4.49M PLSX, 3.26M WPLS). Adding it would need weighted-pool maths in the engine **and** a Balancer-V3 vault integration in ArbExecutor, for very little depth, so it is **not scanned** for now. The Piteas panel labels Tide hops "(not scanned here)".
+
 ## 4. Operating Procedure (step by step)
 
 1. Open https://cryptales.github.io/Arb-Me-Now/.
@@ -85,7 +94,8 @@ For each V3 pool the engine first computes the current interval's capacity *C* i
    - Check the pool addresses on scan.pulsechain.com.
 7. **Alerts (v4.5):** tick **🔔 Alert on new profitable route** and allow browser notifications when asked. Pair it with **Auto-refresh every 15 s**. The scanner beeps, shows a banner and sends a notification **once** for each newly profitable route that is ≥ your min bps and still positive after gas (suspicious rows never alert). Alerts only work while the tab stays open.
 8. **Execute (v4.6, optional):** deploy your own ArbExecutor once (`forge create src/ArbExecutor.sol:ArbExecutor --rpc-url https://rpc.pulsechain.com --private-key <your key> --broadcast`, run on your own machine). In Trade Companion, enter its address, keep or edit size and min profit (default 50% of expected), click **Build calldata**, then **Dry run** (an `eth_call` from the owner; nothing is signed). If it says "Would succeed", send the calldata from your owner wallet (value 0) before the 120 s deadline.
-9. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
+9. **Piteas cross-check (v4.8.1, optional):** in Trade Companion, click **Check with Piteas** to compare the route with the aggregator's whole-market round trip (2 requests; max 6 per minute). Use it sparingly.
+10. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
 
 ## 5. Interpreting results
 
@@ -116,7 +126,7 @@ For each V3 pool the engine first computes the current interval's capacity *C* i
 
 ## 7. Security model
 
-By default the page is read-only: it uses only `eth_call` and HTTPS GET requests. Since v4.7 there is an **opt-in** wallet connection: a transaction is sent only when you click Connect & Send *and* approve it in your wallet, and only from the executor owner. The page never sees or stores private keys; there is no tracking and no backend. All code is in one auditable HTML file.
+By default the page is read-only: it uses only `eth_call` and HTTPS GET requests (PulseChain RPC, LibertySwap API, and, only when you click the button, the Piteas quote API). Since v4.7 there is an **opt-in** wallet connection: a transaction is sent only when you click Connect & Send *and* approve it in your wallet, and only from the executor owner. The page never sees or stores private keys; there is no tracking and no backend. All code is in one auditable HTML file.
 
 ## 8. Maintenance
 
@@ -127,10 +137,11 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 9. Roadmap
 
-v4.9 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · deeper or adaptive tick ranges · more venues and tokens.
+Deployment kit + **keeper role** for ArbExecutor (a separate bot key that can execute but never withdraw; profits still go to the owner) · v4.9 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.8.1:** Opt-in Piteas aggregator cross-check in Trade Companion (2 quotes, local 6/min guard, graceful "unavailable" handling); Tide venue identified on-chain as a Balancer-V3 weighted pool and documented (not scanned).
 - **v4.8:** Adaptive V3 tick depth: per-pool interval count sized to the trade (1–8 cap slider, same-block reads), depth range in telemetry.
 - **v4.7:** New tokens eHEX, INC (and WETH pairs) with 9 liquid pairs; opt-in MetaMask Connect & Send (chain switch, owner check, wallet-signed tx).
 - **v4.6.1:** Fixed stale browser tab title (v4.3 → v4.6); white paper PDF regenerated.

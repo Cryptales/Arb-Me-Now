@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.8</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.8.1</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.8 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.8.1 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -275,6 +275,10 @@
         <li>Supported pools (callbacks verified on-chain): PulseX v1/v2 (<code>uniswapV2Call</code>), 9mm v2 (<code>pancakeCall</code>), LibertySwap V3 (<code>libertyV3SwapCallback</code>). Fee-on-transfer tokens are not supported.</li>
         <li>In Trade Companion, enter your deployed address, then <b>Build calldata</b> and <b>Dry run</b>. The dry run is an <code>eth_call</code> from the owner, so nothing is signed or sent. Send the calldata from your owner wallet to execute.</li>
         <li>Fork-tested on PulseChain: on an artificially created gap, the contract's profit matched the scanner's prediction exactly for v2→v2 and within 2 wei for a v3 leg. Live routes currently revert with <code>NoProfit</code>, as expected.</li></ul></div>
+    <div class="docs-section"><h4>New in v4.8.1: 🔎 Piteas cross-check</h4>
+      <ul><li>Trade Companion has an opt-in <b>Check with Piteas</b> button. It asks the Piteas aggregator for the best whole-market price of the route's first hop and the way back (2 requests), then compares that round trip with our route. If Piteas does as well or better, the gap is probably available to everyone.</li>
+        <li>Piteas allows 10 requests per minute and says its API isn't for arb bots, so the button is manual only and capped at 6 requests per minute here. If Piteas is down, the panel says so; the scanner never depends on it.</li>
+        <li>The <b>Tide</b> venue seen in Piteas routes is a Balancer-V3-style weighted pool (5 tokens, 0.30% fee, small balances). It needs different maths and a vault integration, so it is not scanned yet; Piteas hops through Tide are labelled "(not scanned here)".</li></ul></div>
     <div class="docs-section"><h4>New in v4.8: adaptive V3 tick depth</h4>
       <ul><li>A <b>V3 tick depth cap</b> slider (1–8, default 4) sets the maximum number of initialized-tick intervals read per direction for each LibertySwap V3 pool.</li>
         <li>Each pool reads only what your trade size needs: the engine measures the current interval's capacity in start-token units (tighter of both swap directions) and reads <code>size ÷ capacity + 2</code> intervals, at least 2 and at most the cap. Pools that don't contain the start token (3-hop middle legs) read the full cap.</li>
@@ -775,6 +779,32 @@ async function libertyQuote(srcSym, dstSym, amountRaw, srcChain, dstChain, recip
     route: j.route && j.route.type, srcToken: j.srcToken, destToken: j.destToken };
 }
 
+// ─── v4.8.1: Piteas aggregator cross-check (read-only, opt-in) ───────────────
+// Piteas allows 10 req/min (exceeding it can block the IP for 1 h) and says its API is not for
+// arb bots, so this is a manual button only, with a local cap of 6 requests per rolling 60 s.
+const PITEAS_QUOTE = 'https://sdk.piteas.io/quote';
+const PITEAS_ROUTER = '0x6BF228eb7F8ad948d37deD07E595EfddfaAF88A6';
+const piteasLimiter = { stamps: [], limit: 6,
+  take() { const now = Date.now(); this.stamps = this.stamps.filter(t => now - t < 60000);
+    if (this.stamps.length >= this.limit) return false; this.stamps.push(now); return true; } };
+// Returns { latency, destAmount, gasUseEstimate, venues:[...], path:[symbols] }.
+async function piteasQuote(srcAddr, dstAddr, amountRaw) {
+  if (!piteasLimiter.take()) throw new Error('Local Piteas guard (6 req/60 s) reached — wait a minute');
+  const q = new URLSearchParams({ tokenInAddress: srcAddr, tokenOutAddress: dstAddr, amount: amountRaw.toString(), allowedSlippage: '0.5' });
+  const t0 = Date.now();
+  let r;
+  try { r = await fetch(`${PITEAS_QUOTE}?${q}`); } catch (e) { throw new Error('Piteas unreachable (network/CORS)'); }
+  if (r.status === 429) throw new Error('Piteas rate limit hit (HTTP 429) — stop for at least an hour');
+  if (!r.ok) throw new Error(`Piteas unavailable (HTTP ${r.status})`);
+  const j = await r.json().catch(() => null);
+  if (!j || j.destAmount == null) throw new Error('Piteas returned no quote');
+  const venues = new Set();
+  const walk = s => (s || []).forEach(x => { (x.subswaps || []).forEach(ss => (ss.paths || []).forEach(p => p.exchange && venues.add(p.exchange))); });
+  if (j.route) walk(j.route.swaps);
+  const path = j.route && j.route.paths && j.route.paths[0] ? j.route.paths[0].map(t => t.symbol) : [];
+  return { latency: Date.now() - t0, destAmount: BigInt(j.destAmount), gasUseEstimate: j.gasUseEstimate || null, venues: [...venues], path };
+}
+
 // ─── formatting ───────────────────────────────────────────────────────────────
 function fmtUnits(raw, dec, maxFrac = 6) {
   const neg = raw < 0n; let v = neg ? -raw : raw;
@@ -1183,8 +1213,47 @@ function execPanel(legs, res, S) {
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap"><button class="primary" onclick="buildExec()">Build calldata</button><button class="primary" onclick="simExec()">Dry run (eth_call from owner)</button><button class="primary" onclick="copyExec()">Copy calldata</button></div>
     <div id="ex-out" class="small" style="margin-top:10px"></div>
     <pre id="ex-data" class="calc" style="display:none;word-break:break-all;white-space:pre-wrap"></pre>
+    ${piteasSection()}
     ${walletSection()}
   </div>`;
+}
+
+// ─── v4.8.1: Piteas cross-check (one round trip = 2 quotes; manual only) ───
+function piteasSection() {
+  return `<h3 class="section" style="margin-top:14px">🔎 Piteas cross-check</h3>
+    <div class="small">Asks the Piteas aggregator for the best whole-market price of this cycle's first hop and the way back (2 requests, max 6 per minute here). If Piteas' round trip already beats our route, the gap is not unique to these pools. Read-only; nothing is signed.</div>
+    <div style="margin-top:8px"><button class="btn btn-sm primary" onclick="piteasCheck()">Check with Piteas</button></div>
+    <div id="pt-out" class="small" style="margin-top:8px"></div>`;
+}
+async function piteasCheck() {
+  const out = $('pt-out'), ex = state.exec;
+  if (!ex || !ex.legs || !ex.legs.length) { out.innerHTML = '<span class="profit-negative">Open a route first.</span>'; return; }
+  const S = ex.S, dS = TOKENS[S].dec, sAddr = TOKENS[S].addr;
+  const raw = ($('ex-size').value || '').trim();
+  let size; try { size = parseUnits(raw, dS); } catch (e) { size = 0n; }
+  // The field shows the optimum rounded to 6 decimals; treat an untouched field as the exact optimum.
+  if (ex.size && raw === fmtUnits(ex.size, dS, 6).replace(/,/g, '')) size = ex.size;
+  if (!size || size <= 0n) { out.innerHTML = '<span class="profit-negative">Enter an input size.</span>'; return; }
+  const l0 = ex.legs[0], midAddr = l0.tokenIn === l0.pool.token0 ? l0.pool.token1 : l0.pool.token0, M = symOf(midAddr);
+  out.textContent = `Querying Piteas ${S} → ${M} → ${S}…`;
+  try {
+    const a = await piteasQuote(sAddr, midAddr, size);
+    const b = await piteasQuote(midAddr, sAddr, a.destAmount);
+    const ours = ex.size && size === ex.size ? size + ex.expProfit : null;
+    const rt = b.destAmount - size, dM = TOKENS[M] ? TOKENS[M].dec : 18;
+    const flag = v => v.map(x => /tide/i.test(x) ? `${x} <span class="small">(not scanned here)</span>` : x).join(', ');
+    let verdict;
+    if (ours == null) verdict = 'Size differs from the scanned optimum, so only the Piteas round trip is shown.';
+    else if (b.destAmount >= ours) verdict = '<span class="profit-negative">Piteas round trip ≥ our route: the gap is likely available market-wide (others can take it too).</span>';
+    else verdict = '<span class="profit-positive">Our route beats the Piteas round trip: the gap looks specific to these pools.</span>';
+    out.innerHTML = `<div class="detail-row"><span class="dk">Piteas ${S} → ${M}</span><span class="dv mono">${fmtUnits(a.destAmount, dM, 6)} ${M} via ${flag(a.venues) || 'n/a'} (${a.latency} ms)</span></div>
+      <div class="detail-row"><span class="dk">Piteas ${M} → ${S}</span><span class="dv mono">${fmtUnits(b.destAmount, dS, 6)} ${S} via ${flag(b.venues) || 'n/a'} (${b.latency} ms)</span></div>
+      <div class="detail-row"><span class="dk">Piteas round trip vs input</span><span class="dv mono ${rt > 0n ? 'profit-positive' : 'profit-negative'}">${rt > 0n ? '+' : ''}${fmtUnits(rt, dS, 6)} ${S} (before gas)</span></div>
+      ${ours != null ? `<div class="detail-row"><span class="dk">Our route output</span><span class="dv mono">${fmtUnits(ours, dS, 6)} ${S}</span></div>` : ''}
+      <div style="margin-top:6px">${verdict}</div>`;
+  } catch (e) {
+    out.innerHTML = `<span class="profit-negative">${e.message}</span> <span class="small">The scanner itself does not depend on Piteas.</span>`;
+  }
 }
 
 // ─── v4.7: MetaMask 1-click send (optional; the copy-calldata flow above still works) ───
