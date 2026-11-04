@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.9)
+# Arb-Me-Now — Process Manual & White Paper (v4.9.1)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -98,9 +98,37 @@ Piteas allows **10 requests per minute** (going over can block the IP for an hou
 - Read keeper showed none, then Set keeper worked, and Dry run said "Would succeed, +52.86 WPLS".
 - The **keeper** sent the 3-leg route (7,122 WPLS flash input). Status 1: the owner received **52.86 WPLS** and the keeper received 0.
 - A stranger's Send and Set keeper were blocked by the page; Revoke worked.
-- **Important:** that execute used **770,688 gas**, about 218 PLS at 282,679 gwei. That is far more than the 52.86 WPLS profit (WPLS = PLS 1:1), so live it would have **lost about 165 PLS net**. It is also about 2.2× the scanner's 350k 3-hop gas assumption, so treat "net after gas" for routes with V3 legs as optimistic until the gas model is recalibrated (backlog).
+- **Important:** that execute used **770,688 gas**, about 218 PLS at 282,679 gwei. That is far more than the 52.86 WPLS profit (WPLS = PLS 1:1), so live it would have **lost about 165 PLS net**. It is also about 2.2× the scanner's 350k 3-hop gas assumption, so "net after gas" for routes with V3 legs was badly optimistic. **Fixed in v4.9.1** (§3.12).
 
 **Connect & Send** now also accepts the keeper account. **Dry run** still simulates from the owner. The CLI alternative is `forge create … --interactive` on your own machine.
+
+### 3.12 Gas model recalibration (v4.9.1)
+
+The old flat estimates (250,000 gas for 2 hops, 350,000 for 3) came from generic DEX swaps. They did not include the ArbExecutor's flash-swap callbacks or the extra cost of V3 swaps. v4.9.1 replaces them with a per-route model based on measured gas:
+
+**Measured on a PulseChain fork (3 Nov 2026).** The forge rows are the `execute` call only, with pools already warm from test setup, so they understate a real transaction.
+
+| Route (legs) | Measured gas |
+|---|---:|
+| V2 flash + V2 | 383,256 |
+| V3 flash + V2 | 428,225 |
+| V2 flash + V3 (large size, tick crossings) | 573,416 |
+| V2 + V2 + V2 triangular | 346,153 |
+| 3-leg route with V3 legs (full transaction, cold) | 770,688 |
+
+**Model:** estimated gas = **150,000 base** (transaction + flash/callback overhead) + **140,000 per V2 hop** + **230,000 per V3 hop**. Values are rounded up to allow for cold storage access.
+
+| Route | Old estimate | New estimate |
+|---|---:|---:|
+| V2 + V2 | 250,000 | 430,000 |
+| V3 + V2 | 250,000 | 520,000 |
+| V2 × 3 | 350,000 | 570,000 |
+| V3 + V3 + V2 | 350,000 | 750,000 |
+| V3 × 3 | 350,000 | 840,000 |
+
+- Each row's "net after gas" uses its own estimate and shows it, e.g. "(~520k gas)". The summary line states the model.
+- **Dry run now measures real gas.** After a successful `eth_call`, the page also calls `eth_estimateGas` for the exact transaction from the owner and shows its gas, its cost in PLS/USD at the live gas price and, for WPLS routes, **net profit after gas**. That figure overrides the model.
+- The model is still an estimate. Tick crossings, token transfer logic and storage warmth change real gas by tens of thousands. Always rely on the dry-run number before sending.
 
 ## 4. Operating Procedure (step by step)
 
@@ -112,7 +140,7 @@ Piteas allows **10 requests per minute** (going over can block the IP for an hou
 5. Click **Inspect** to open the Trade Companion. It shows reserves or v3 state for every leg, the depth caps, and the exact BigInt calculation.
 6. **Before acting on any row:**
    - Re-scan to confirm the opportunity is still there in a fresh block.
-   - Check the **net after gas** line. Gas is estimated from the live `eth_gasPrice` × 250,000 gas (2-hop) or 350,000 gas (3-hop), valued at WPLS/USD. Real gas use depends on your execution contract.
+   - Check the **net after gas** line. Gas is estimated from the live `eth_gasPrice` × a per-route estimate (150k base + 140k per V2 hop + 230k per V3 hop, §3.12), valued at WPLS/USD. The Trade Companion **Dry run** shows the measured `eth_estimateGas` figure and net after gas. Use that number before sending.
    - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
    - Check the pool addresses on scan.pulsechain.com.
 7. **Alerts (v4.5):** tick **🔔 Alert on new profitable route** and allow browser notifications when asked. Pair it with **Auto-refresh every 15 s**. The scanner beeps, shows a banner and sends a notification **once** for each newly profitable route that is ≥ your min bps and still positive after gas (suspicious rows never alert). Alerts only work while the tab stays open.
@@ -160,10 +188,11 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 9. Roadmap
 
-Recalibrate gas units from measured executes (3-leg with V3 legs measured at 770,688 gas) · first mainnet deploy + small live test · v4.10 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
+first mainnet deploy + small live test · v4.10 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.9.1:** Gas model recalibrated from fork measurements: per-route 150k base + 140k per V2 hop + 230k per V3 hop (was flat 250k/350k, ~2.2× too low for V3 routes). Dry run now shows measured `eth_estimateGas`, PLS/USD cost and net-after-gas.
 - **v4.9:** ArbExecutor keeper role (execute-only bot key; owner-only withdraw/setKeeper; profit to owner; 3 new fork tests, 14/14). Deploy kit: pinned paris build, in-app Estimate / Deploy / Set-keeper via the connected wallet; Send accepts the keeper.
 - **v4.8.1:** Opt-in Piteas aggregator cross-check in Trade Companion (2 quotes, local 6/min guard, graceful "unavailable" handling); Tide venue identified on-chain as a Balancer-V3 weighted pool and documented (not scanned).
 - **v4.8:** Adaptive V3 tick depth: per-pool interval count sized to the trade (1–8 cap slider, same-block reads), depth range in telemetry.

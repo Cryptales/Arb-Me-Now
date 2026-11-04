@@ -71,6 +71,11 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Changelog
 
+### v4.9.1 (2026-11-03)
+- **Gas model recalibrated** from fork measurements of `ArbExecutor.execute`: V2+V2 383k, V3+V2 428k, V2+V3 573k, V2×3 346k (warm, call only); 3-leg V3 route 770,688 (full tx). Each route is now estimated as 150k + 140k per V2 hop + 230k per V3 hop, replacing the flat 250k/350k that was ~2.2× too low for V3 routes. Each row shows its gas estimate.
+- **Dry run measures real gas**: after a successful simulation, `eth_estimateGas` is called for the exact transaction, and the page shows gas, PLS/USD cost and (for WPLS routes) net profit after gas.
+- White paper v4.9.1 (new §3.12, §4 step 6, roadmap, history) + PDF regenerated.
+
 ### v4.9 (2026-11-03)
 - ArbExecutor **keeper role**: the owner can appoint/revoke one bot key (`setKeeper`) that may only call `execute()`; `withdraw`/`setKeeper` stay owner-only; profit always goes to the owner. New error `NotAuthorized`. 3 new fork tests (14/14 pass).
 - **Deploy kit** in Trade Companion: Estimate deploy cost, Deploy ArbExecutor (wallet-signed, receipt + `owner()` check, address saved locally), Read / Set / revoke keeper. Connect & Send now accepts the keeper account.
@@ -108,7 +113,7 @@ All addresses and fees were verified on-chain against live contract data. See th
 - White paper / process manual updated to v4.5.
 
 ### v4.4 (2026-11-01)
-- Gas-adjusted net profit (live eth_gasPrice × 250k/350k gas).
+- Gas-adjusted net profit (live eth_gasPrice × per-route estimate: 150k + 140k/V2 hop + 230k/V3 hop; dry run shows measured eth_estimateGas).
 - Process manual: see [WHITEPAPER.md](WHITEPAPER.md).
 - Old dashboard.html / trade-companion.html now redirect to the scanner.
 - Added triangular 3-hop route search (toggle in Settings), with optimal sizing and a three-leg Trade Companion view.
