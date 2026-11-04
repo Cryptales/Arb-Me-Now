@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.0
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.0.1
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -59,6 +59,8 @@ node server/scanner.js                             # run continuously (use scree
 
 `config.json` is git-ignored, so your token stays private. Full guide: [server/README.md](server/README.md) · White Paper §3.14.
 
+**New in v5.0.1 — scan log.** Each scan also appends the single best route it saw that scan — even when net-negative after gas — to `server/scan_log.csv` (git-ignored, on by default via `csv_log` in `config.json`). It's a 19-column near-miss history (route, pools, mid gap, optimal size + gross/net USD + bps, gas, profit at your fixed size) for studying how close the market comes to a profitable cycle over time.
+
 ## Reading the results table
 
 | Column | What it means |
@@ -96,6 +98,11 @@ The full explanation with a worked example is in the white paper, §5.1.
 ---
 
 ## Changelog
+
+### v5.0.1 (2026-11-04)
+- **Scan-log CSV.** The server scanner now appends one row per scan to `server/scan_log.csv` recording the single best *executable* route that scan — the largest mid-gap route that clears the dust floors — even when it is net-negative after gas. 19 columns: timestamp, scan, block, gas price, routes evaluated, route + pools, mid gap, optimal size/gross/net/bps, gas estimate, and profit at your fixed trade size.
+- Git-ignored and controlled by `csv_log` / `csv_path` in `config.json` (on by default). Alert logic is unchanged — this only writes a near-miss history for later analysis of which pairs, venues and gas levels come closest to profitable.
+- Tested live: rows append once per scan. White paper §3.14 + history and in-app Docs note updated; PDF regenerated.
 
 ### v5.0 (2026-11-04)
 - **New `server/` folder: server scanner + Telegram alerts.** `scanner.js` reuses `engine.js` on Node 18+ with no dependencies. It scans all four venues (2-pool and triangular cycles), applies the browser's suspicious/dust filters and the v4.9.3 gas model, and alerts only on routes that are net-positive after gas, de-duplicated per route (default 5 min).

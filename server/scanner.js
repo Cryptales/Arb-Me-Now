@@ -36,6 +36,8 @@ const {
   dedup_minutes     = 5,           // suppress repeat alerts for the same route
   v3_depth          = 4,           // tick intervals per V3 leg (1–8)
   do_triangular     = true,        // also scan triangular 3-hop routes
+  csv_log           = true,        // append one "best route this scan" row to a CSV (even when negative)
+  csv_path          = 'scan_log.csv', // CSV file: relative to server/ dir, or an absolute path
 } = CFG;
 
 const DRY = process.argv.includes('--dry'), ONCE = process.argv.includes('--once');
@@ -75,6 +77,30 @@ function fmtToken(raw, dec, sym) { return (Number(raw) / 10 ** dec).toFixed(4) +
 function routeKey(r) {
   if (r.kind === 'tri') return `tri:${r.startSym}>${r.midSymY}>${r.midSymZ}>${r.legA.pool.label}>${r.legB.pool.label}>${r.legC.pool.label}`;
   return `${r.startSym}>${E.symOf(r.otherAddr)}>${r.legA.pool.label}>${r.legB.pool.label}`;
+}
+
+// ─── CSV telemetry ────────────────────────────────────────────────────────────
+// One row per scan: the single most-promising route (ranked by gross gap), even
+// when it loses money after gas.  Lets you study near-misses over time.
+const CSV_PATH = csv_log ? (path.isAbsolute(csv_path) ? csv_path : path.join(__dirname, csv_path)) : null;
+const CSV_HEADER = [
+  'timestamp', 'scan', 'block', 'gas_price_gwei', 'routes_evaluated', 'net_positive',
+  'best_route', 'best_type', 'best_pools', 'mid_gap_pct',
+  'opt_size_tok', 'opt_gross_usd', 'opt_bps', 'gas_units', 'gas_usd', 'opt_net_usd',
+  'fixed_size_tok', 'fixed_gross_usd', 'fixed_net_usd',
+].join(',');
+function csvCell(v) {
+  if (v == null) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function csvNum(v, dp) { return (v == null || !isFinite(v)) ? '' : Number(v).toFixed(dp); }
+function csvAppend(fields) {
+  if (!CSV_PATH) return;
+  try {
+    if (!fs.existsSync(CSV_PATH) || fs.statSync(CSV_PATH).size === 0) fs.writeFileSync(CSV_PATH, CSV_HEADER + '\n');
+    fs.appendFileSync(CSV_PATH, fields.map(csvCell).join(',') + '\n');
+  } catch (e) { console.warn('[CSV] write failed:', e.message); }
 }
 
 // ─── Deduplication ────────────────────────────────────────────────────────────
@@ -170,43 +196,80 @@ async function scan() {
     const rows3 = do_triangular ? E.scanTriangular(livePools, start_token, amountInRaw) : [];
     const allRows = [...rows2, ...rows3];
 
-    // 5. Filter and annotate
+    // 5. Annotate every row — profit/gas/net at both the optimal and the fixed (user) size,
+    //    plus the suspicious flag — so we can both alert AND log the best near-miss.
     const SUS_GAP = 0.5, DUST_USD = 25;
-    const candidates = allRows.map(r => {
+    const legCapUsd = (leg) => {
+      const sym = E.symOf(leg.tokenIn); const px = E.tokenUsd(sym, livePools, wpls);
+      return px == null ? null : toFloat(leg.maxIn, E.TOKENS[sym].dec) * px;
+    };
+    const ann = allRows.map(r => {
+      if (!r.opt) return null;
       const isTri = r.kind === 'tri';
       const legList = isTri ? [r.legA, r.legB, r.legC] : [r.legA, r.legB];
-      const prof = r.opt && r.opt.profit > 0n;
-      if (!prof) return null;
-
-      // suspicious check (2-hop only; triangular scanner already filters)
-      if (!isTri) {
-        const legCapUsd = (leg) => {
-          const sym = E.symOf(leg.tokenIn); const px = E.tokenUsd(sym, livePools, wpls);
-          return px == null ? null : toFloat(leg.maxIn, E.TOKENS[sym].dec) * px;
-        };
+      let suspicious = false;
+      if (!isTri) { // suspicious check is 2-hop only; the triangular scanner already filters
         const capA = legCapUsd(r.legA), capB = legCapUsd(r.legB);
         const dust = (capA != null && capA < DUST_USD) || (capB != null && capB < DUST_USD);
         const wild = Math.abs(r.midEdge) > SUS_GAP;
-        if (dust || wild) return null;
+        suspicious = dust || wild;
       }
-
-      const profUsd = usdS != null ? toFloat(r.opt.profit, dec) * usdS : null;
+      const optProfUsd = usdS != null ? toFloat(r.opt.profit, dec) * usdS : null;
       const bps = r.opt.amountIn > 0n ? Number(r.opt.profit * 1000000n / r.opt.amountIn) / 100 : null;
       r.bps = bps;
-      if (min_profit_bps > 0 && (bps == null || bps < min_profit_bps)) return null;
-
-      const gasUnits = routeGas(legList);
-      const gasUsd   = gasUsdFn(gasUnits);
-      const netUsd   = (profUsd != null && gasUsd != null) ? profUsd - gasUsd : null;
-      if (netUsd == null || netUsd <= 0) return null;
-
-      return { r, profUsd, gasUsd, netUsd, gasUnits, bps };
+      const gasUnits   = routeGas(legList);
+      const gasUsd     = gasUsdFn(gasUnits);
+      const optNetUsd  = (optProfUsd != null && gasUsd != null) ? optProfUsd - gasUsd : null;
+      const optSizeUsd = (usdS != null && r.opt && r.opt.amountIn != null) ? toFloat(r.opt.amountIn, dec) * usdS : null;
+      const fixedProfUsd = (r.user && usdS != null) ? toFloat(r.user.profit, dec) * usdS : null;
+      const fixedNetUsd  = (fixedProfUsd != null && gasUsd != null) ? fixedProfUsd - gasUsd : null;
+      return { r, isTri, suspicious, optProfUsd, bps, gasUnits, gasUsd, optNetUsd, optSizeUsd, fixedProfUsd, fixedNetUsd };
     }).filter(Boolean);
+
+    // 5a. Alert candidates: net-positive after gas, not suspicious, above min bps (behaviour unchanged).
+    const candidates = ann.filter(a =>
+      a.r.opt.profit > 0n && !a.suspicious
+      && !(min_profit_bps > 0 && (a.bps == null || a.bps < min_profit_bps))
+      && a.optNetUsd != null && a.optNetUsd > 0
+    ).map(a => ({ r: a.r, profUsd: a.optProfUsd, gasUsd: a.gasUsd, netUsd: a.optNetUsd, gasUnits: a.gasUnits, bps: a.bps }));
 
     // 6. Log scan result
     const statusLine = `[${ts}] scan #${scanCount} block ${block}: `
       + `${allRows.length} routes evaluated, ${candidates.length} net-positive`;
     console.log(statusLine);
+
+    // 6a. CSV telemetry — the single best route this scan (ranked by gross gap), even when it loses after gas.
+    if (CSV_PATH) {
+      const gasGwei = gasPrice != null ? Number(gasPrice) / 1e9 : null;
+      // "Best" = the biggest real price gap among genuinely executable routes.
+      // Non-suspicious 2-hop routes already cleared the engine's ≥$25 leg-liquidity (dust) check,
+      // so they qualify at any profitability (these are the near-misses we want).  Triangular routes
+      // skip that check upstream, so require a real optimal size (≥$25) to exclude illiquid mirages.
+      let best = null;
+      for (const a of ann) {
+        if (a.suspicious) continue;
+        if (a.isTri && !(a.optSizeUsd != null && a.optSizeUsd >= DUST_USD)) continue;
+        if (!best || a.r.midEdge > best.r.midEdge) best = a;
+      }
+      if (best) {
+        const r = best.r;
+        const route = best.isTri ? `${r.startSym}>${r.midSymY}>${r.midSymZ}>${r.startSym}`
+                                 : `${r.startSym}>${E.symOf(r.otherAddr)}>${r.startSym}`;
+        const pools = best.isTri ? `${r.legA.pool.label} > ${r.legB.pool.label} > ${r.legC.pool.label}`
+                                 : `${r.legA.pool.label} > ${r.legB.pool.label}`;
+        const optSize   = (r.opt && r.opt.amountIn != null) ? toFloat(r.opt.amountIn, dec) : null;
+        const fixedSize = r.user ? toFloat(r.user.amountIn, dec) : null;
+        csvAppend([
+          ts, scanCount, block, csvNum(gasGwei, 3), allRows.length, candidates.length,
+          route, best.isTri ? 'tri' : '2hop', pools, csvNum(r.midEdge * 100, 4),
+          csvNum(optSize, 4), csvNum(best.optProfUsd, 4), csvNum(best.bps, 2), best.gasUnits, csvNum(best.gasUsd, 4), csvNum(best.optNetUsd, 4),
+          csvNum(fixedSize, 4), csvNum(best.fixedProfUsd, 4), csvNum(best.fixedNetUsd, 4),
+        ]);
+      } else {
+        csvAppend([ts, scanCount, block, csvNum(gasGwei, 3), allRows.length, candidates.length,
+          '', '', '', '', '', '', '', '', '', '', '', '', '']);
+      }
+    }
 
     // 7. Alert
     for (const { r, profUsd, gasUsd, netUsd, gasUnits } of candidates) {

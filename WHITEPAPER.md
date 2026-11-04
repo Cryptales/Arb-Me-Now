@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v5.0)
+# Arb-Me-Now — Process Manual & White Paper (v5.0.1)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -151,6 +151,8 @@ Up to v4.9.4 the scanner only ran while the page was open in a browser tab. v5.0
 - rows below `min_profit_bps` are dropped (gross bps at the optimal size);
 - only rows whose **net USD after estimated gas is above zero** remain.
 
+**Scan log (v5.0.1).** Alerts only fire on net-positive routes, but the interesting learning is in the near-misses. So from v5.0.1 the scanner appends one row per scan to `server/scan_log.csv` recording the single *best* route that scan — the executable route with the largest mid-price gap — **even when it is net-negative after gas**. "Executable" excludes dust mirages: non-suspicious 2-pool rows (already past the $25 safe-depth floor) plus triangular rows whose optimal size is at least $25. Each row carries the timestamp, scan and block number, gas price, how many routes were evaluated, the route and its pools, the mid gap, the optimal size and its gross/net USD and bps, the gas estimate, and the profit at your fixed trade size. The file is git-ignored and controlled by `csv_log` / `csv_path` in `config.json` (on by default). Over days this builds a dataset of how close the market comes to a profitable cycle, which venues and pairs dominate the near-misses, and what gas levels would tip them positive — the raw material for tuning sizing, venue selection and the eventual keeper.
+
 Gas uses the v4.9.3 calibration: 210k base + 140k per V2 hop + 230k per V3 hop, priced at the live gas price.
 
 **De-duplication.** The same route (venue legs plus tokens) is alerted at most once every `dedup_minutes` (default 5), so a gap that lasts several blocks doesn't spam you.
@@ -272,6 +274,7 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 10. Version history
 
+- **v5.0.1:** Scan-log CSV (§3.14). The server scanner now appends one row per scan to `server/scan_log.csv` recording the single best *executable* route that scan — the largest mid-gap route that clears the dust floors — even when it is net-negative after gas. 19 columns (timestamp, scan, block, gas price, routes evaluated, route + pools, mid gap, optimal size/gross/net/bps, gas estimate, profit at fixed size). Git-ignored; toggled by `csv_log` / `csv_path` in `config.json` (on by default). Alert logic unchanged — this only writes a near-miss history for later analysis. Tested live: rows append once per scan.
 - **v5.0:** Server scanner + Telegram alerts (§3.14). New `server/` folder: `scanner.js` runs the same engine on an always-on machine and sends a Telegram alert for every route that is net-positive after gas and not suspicious, de-duplicated per route. It only alerts and never trades. `--dry --once` lets you test without Telegram. Live dry-run scan tested (200 routes, 0 net-positive); real Telegram delivery not yet tested.
 - **v4.9.4:** Documentation release. New §5.1, *Reading the results table*: every column explained (mid gap, optimal size → profit, profit USD + net after gas, at your size, flags with exact labels), the profit curve with a worked example, and the scan-timing, safe-depth and optimum-shift details. Matching in-app Docs section and README section. No scanner logic changed.
 - **v4.9.3:** Gas model recalibrated on mainnet. The per-route base rises from 150k to 210k (V2 and V3 hop costs unchanged), so the V2 × 3 estimate is now 630k vs 627,914 measured. Every net-after-gas figure is slightly more conservative.

@@ -28,6 +28,12 @@
   "do_triangular": true,
   "_triangular_help": "Also scan triangular 3-hop routes (S -> Y -> Z -> S). Doubles scan time slightly.",
 
+  "csv_log": true,
+  "_csv_log_help": "Append one row per scan to a CSV recording the single best (most-promising) route that scan, even when it loses money after gas. Great for studying near-misses over time. Set false to disable.",
+
+  "csv_path": "scan_log.csv",
+  "_csv_path_help": "CSV file to write. Relative paths are resolved inside the server/ folder; absolute paths are used as-is. The file is gitignored by default.",
+
   "rpc_urls": ["https://rpc.pulsechain.com"],
   "_rpc_help": "PulseChain RPC endpoint(s). The first one is used. Add a backup as a second element if you have one."
 }
