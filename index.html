@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.8.1</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.8.1 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.9 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -271,10 +271,14 @@
       </ul></div>
     <div class="docs-section"><h4>Atomic execution: ArbExecutor (v4.6)</h4>
       <ul><li>An open-source flash-swap contract (<a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://github.com/Cryptales/Arb-Me-Now/tree/main/contracts">/contracts</a>) executes a 2- or 3-hop cycle in <b>one transaction</b>. Leg A is a flash swap (tokens out first, repaid at the end), so no starting capital is needed.</li>
-        <li>If the cycle returns less than input + your min profit, it reverts with <code>NoProfit</code>; only gas is lost. Only the deployer (owner) can call it; callbacks are accepted only from the pool currently being swapped.</li>
+        <li>If the cycle returns less than input + your min profit, it reverts with <code>NoProfit</code>; only gas is lost. Only the owner, or the keeper it appoints (v4.9), can call it; callbacks are accepted only from the pool currently being swapped.</li>
         <li>Supported pools (callbacks verified on-chain): PulseX v1/v2 (<code>uniswapV2Call</code>), 9mm v2 (<code>pancakeCall</code>), LibertySwap V3 (<code>libertyV3SwapCallback</code>). Fee-on-transfer tokens are not supported.</li>
         <li>In Trade Companion, enter your deployed address, then <b>Build calldata</b> and <b>Dry run</b>. The dry run is an <code>eth_call</code> from the owner, so nothing is signed or sent. Send the calldata from your owner wallet to execute.</li>
         <li>Fork-tested on PulseChain: on an artificially created gap, the contract's profit matched the scanner's prediction exactly for v2→v2 and within 2 wei for a v3 leg. Live routes currently revert with <code>NoProfit</code>, as expected.</li></ul></div>
+    <div class="docs-section"><h4>New in v4.9: 🚀 Deploy kit + 🤖 keeper role</h4>
+      <ul><li>Trade Companion → Connect Wallet → <b>Estimate deploy cost</b> (simulation only) and <b>Deploy ArbExecutor</b>. Your wallet signs; the connected account becomes the permanent owner. The page waits for the receipt, checks <code>owner()</code> and remembers the address in this browser.</li>
+        <li>The contract now has an optional <b>keeper</b>: a separate bot key that can call <code>execute()</code> but can never withdraw or change the keeper. Profit always goes to the owner. Set or revoke it with <b>Set / revoke keeper</b> (owner only; empty = revoke).</li>
+        <li>The embedded bytecode is built with pinned settings (solc 0.8.24, evm paris, optimizer 200), the same as <code>contracts/</code> in the repo. 14/14 fork tests pass, including keeper-can-execute and keeper-cannot-withdraw. The contract is unaudited: start small.</li></ul></div>
     <div class="docs-section"><h4>New in v4.8.1: 🔎 Piteas cross-check</h4>
       <ul><li>Trade Companion has an opt-in <b>Check with Piteas</b> button. It asks the Piteas aggregator for the best whole-market price of the route's first hop and the way back (2 requests), then compares that round trip with our route. If Piteas does as well or better, the gap is probably available to everyone.</li>
         <li>Piteas allows 10 requests per minute and says its API isn't for arb bots, so the button is manual only and capped at 6 requests per minute here. If Piteas is down, the panel says so; the scanner never depends on it.</li>
@@ -825,7 +829,8 @@ const symOf = addr => Object.keys(TOKENS).find(k => TOKENS[k].addr === addr) || 
 // bits 0-159 pool | 160-167 kind (0 v2, 1 v3) | 168-175 zeroForOne | 176-191 v2 fee (bps).
 const EXEC = { selExecute: '0x29df2c6f', selOwner: '0x8da5cb5b', errors: {
   '0x31708d59': 'NoProfit', '0x30cd7471': 'NotOwner', '0x203d82d8': 'Expired', '0xc4c321d1': 'BadRoute',
-  '0x6c25f7f8': 'BadCallback', '0x3ef33375': 'Busy', '0x90b8ec18': 'TransferFailed' } };
+  '0x6c25f7f8': 'BadCallback', '0x3ef33375': 'Busy', '0x90b8ec18': 'TransferFailed',
+  '0xea8e4eb5': 'NotAuthorized' } }; // NotAuthorized: v4.9 keeper-role contract
 function packLeg(leg) {
   const p = leg.pool;
   const zf = leg.tokenIn.toLowerCase() === p.token0.toLowerCase() ? 1n : 0n;
@@ -1215,6 +1220,7 @@ function execPanel(legs, res, S) {
     <pre id="ex-data" class="calc" style="display:none;word-break:break-all;white-space:pre-wrap"></pre>
     ${piteasSection()}
     ${walletSection()}
+    ${deploySection()}
   </div>`;
 }
 
@@ -1268,7 +1274,7 @@ function walletSection() {
       <button id="ex-connect" class="btn btn-sm primary" onclick="connectWallet()">${conn ? 'Reconnect wallet' : 'Connect Wallet'}</button>
       <button id="ex-send" class="btn btn-sm primary" onclick="sendExec()" style="${conn ? '' : 'display:none'}">Send via MetaMask</button>
     </div>
-    <div class="small" style="margin-top:6px">Sends <span class="mono">execute()</span> with value 0 from the connected account. Only the contract owner can call it; the page checks this first. MetaMask asks you to confirm every transaction.</div>
+    <div class="small" style="margin-top:6px">Sends <span class="mono">execute()</span> with value 0 from the connected account. Only the contract owner or its keeper can call it (profit always goes to the owner); the page checks this first. MetaMask asks you to confirm every transaction.</div>
     <div id="ex-tx" class="small" style="margin-top:8px"></div>`}`;
 }
 async function connectWallet() {
@@ -1308,8 +1314,9 @@ async function sendExec() {
     const o = await window.ethereum.request({ method: 'eth_call', params: [{ to, data: EXEC.selOwner }, 'latest'] });
     if (!o || o.length < 66) throw new Error('owner() failed: not an ArbExecutor at ' + to);
     const owner = ('0x' + o.slice(26, 66)).toLowerCase();
-    if (owner !== state.walletAddr) {
-      tx.innerHTML = `<span class="profit-negative">Connected account ${short(state.walletAddr)} is not the owner (${short(owner)}). The tx would revert, so it was not sent.</span>`;
+    const keeper = owner === state.walletAddr ? null : await readAddr(to, DEPLOY.selKeeper).catch(() => null);
+    if (owner !== state.walletAddr && keeper !== state.walletAddr) {
+      tx.innerHTML = `<span class="profit-negative">Connected account ${short(state.walletAddr)} is neither the owner (${short(owner)}) nor the keeper. The tx would revert, so it was not sent.</span>`;
       return;
     }
     tx.innerHTML = 'Confirm the transaction in MetaMask…';
@@ -1476,6 +1483,106 @@ async function boot() {
   runScan();
 }
 document.addEventListener('DOMContentLoaded', boot);
+
+// ─── v4.9: Deploy kit + keeper role (wallet-signed; this page never holds keys) ───
+// Bytecode is injected at build time from contracts/out (solc pinned, evm "paris", optimizer 200).
+const DEPLOY = { bytecode: '0x60a0604052600160025534801561001557600080fd5b50336080526080516116226100576000396000818160f301528181610174015281816104b00152818161065b015281816106ff015261074301526116226000f3fe608060405234801561001057600080fd5b50600436106100885760003560e01c8063848008121161005b578063848008121461008d5780638da5cb5b146100ee578063aced16611461012d578063f3fef3a31461014057600080fd5b806310d1e85c1461008d57806329df2c6f146100a257806331e2ba55146100c8578063748747e6146100db575b600080fd5b6100a061009b366004611082565b610153565b005b6100b56100b03660046110ec565b610167565b6040519081526020015b60405180910390f35b6100a06100d6366004611177565b61052f565b6100a06100e93660046111ca565b610650565b6101157f000000000000000000000000000000000000000000000000000000000000000081565b6040516001600160a01b0390911681526020016100bf565b600054610115906001600160a01b031681565b6100a061014e3660046111ee565b6106f4565b610160858585858561076c565b5050505050565b6000336001600160a01b037f000000000000000000000000000000000000000000000000000000000000000016148015906101c057506000546001600160a01b0316331415806101c057506000546001600160a01b0316155b156101de5760405163ea8e4eb560e01b815260040160405180910390fd5b814211156101ff57604051630407b05b60e31b815260040160405180910390fd5b60025460011461022257604051633ef3337560e01b815260040160405180910390fd5b8460028110806102325750600481115b8061023b575084155b156102595760405163c4c321d160e01b815260040160405180910390fd5b600061027d888860008181106102715761027161121a565b9050602002013561084a565b905060006102a3898960008181106102975761029761121a565b9050602002013561092a565b905060015b8381101561031557816001600160a01b03166102cf8b8b848181106102715761027161121a565b6001600160a01b0316146102f65760405163c4c321d160e01b815260040160405180910390fd5b61030b8a8a838181106102975761029761121a565b91506001016102a8565b50816001600160a01b0316816001600160a01b0316146103485760405163c4c321d160e01b815260040160405180910390fd5b6040516370a0823160e01b81523060048201526000906001600160a01b038416906370a0823190602401602060405180830381865afa15801561038f573d6000803e3d6000fd5b505050506040513d601f19601f820116820180604052508101906103b39190611230565b6002805590506103c48a8a8a6109b7565b6001600281905580546001600160a01b03191690556040516370a0823160e01b81523060048201526000906001600160a01b038516906370a0823190602401602060405180830381865afa158015610420573d6000803e3d6000fd5b505050506040513d601f19601f820116820180604052508101906104449190611230565b9050610450888361125f565b8110156104985781811161046557600061046f565b61046f8282611272565b6040516331708d5960e01b81526004810191909152602481018990526044015b60405180910390fd5b6104a28282611272565b955085156104d5576104d5847f000000000000000000000000000000000000000000000000000000000000000088610bb6565b604080518a8152602081018890529081018690526001600160a01b038516907f9d3143df72a22f3dea2e5172436c8d5eed763f17bef7a640c55666bdf8a8ad929060600160405180910390a2505050505095945050505050565b6001546001600160a01b03163314158061054c5750600254600214155b1561056a57604051630d84beff60e31b815260040160405180910390fd5b600180546001600160a01b03191690556000808513908161058b578461058d565b855b905060208390036105b3576105ae6105a7848601866111ca565b3383610bb6565b610648565b60006105c18486018661129b565b5090506000836105d157876105d3565b865b6105dc9061135f565b905060006105ea8383610ca0565b905083811015610617576040516331708d5960e01b8152600481018290526024810185905260440161048f565b61064461063d846000815181106106305761063061121a565b602002602001015161084a565b3386610bb6565b5050505b505050505050565b336001600160a01b037f00000000000000000000000000000000000000000000000000000000000000001614610699576040516330cd747160e01b815260040160405180910390fd5b600080546040516001600160a01b03808516939216917f50697e88bd427923002f5d3844f352091c05c0c9c3b69e43830863d22246317391a3600080546001600160a01b0319166001600160a01b0392909216919091179055565b336001600160a01b037f0000000000000000000000000000000000000000000000000000000000000000161461073d576040516330cd747160e01b815260040160405180910390fd5b610768827f000000000000000000000000000000000000000000000000000000000000000083610bb6565b5050565b6001546001600160a01b03163314158061078f57506001600160a01b0385163014155b8061079d5750600254600214155b156107bb57604051630d84beff60e31b815260040160405180910390fd5b600180546001600160a01b03191690556000806107da8385018561129b565b9150915060008087116107ed57856107ef565b865b905060006107fd8483610ca0565b90508281101561082a576040516331708d5960e01b8152600481018290526024810184905260440161048f565b610644610843856000815181106106305761063061121a565b3385610bb6565b600060a882901c60ff166001146108c257816001600160a01b031663d21220a76040518163ffffffff1660e01b8152600401602060405180830381865afa158015610899573d6000803e3d6000fd5b505050506040513d601f19601f820116820180604052508101906108bd919061137b565b610924565b816001600160a01b0316630dfe16816040518163ffffffff1660e01b8152600401602060405180830381865afa158015610900573d6000803e3d6000fd5b505050506040513d601f19601f82011682018060405250810190610924919061137b565b92915050565b600060a882901c60ff1660011461097957816001600160a01b0316630dfe16816040518163ffffffff1660e01b8152600401602060405180830381865afa158015610899573d6000803e3d6000fd5b816001600160a01b031663d21220a76040518163ffffffff1660e01b8152600401602060405180830381865afa158015610900573d6000803e3d6000fd5b6000838360008181106109cc576109cc61121a565b90506020020135905060006109de8290565b9050600060a883901c60ff1660011490506000868686604051602001610a0693929190611398565b60408051808303601f19018152919052600180546001600160a01b0319166001600160a01b0386161790559050600060a085901c60ff1603610aff576000610a58848488610a5389610ce3565b610d13565b905080600003610a7b5760405163c4c321d160e01b815260040160405180910390fd5b836001600160a01b031663022c0d9f84610a955782610a98565b60005b85610aa4576000610aa6565b835b30866040518563ffffffff1660e01b8152600401610ac79493929190611426565b600060405180830381600087803b158015610ae157600080fd5b505af1158015610af5573d6000803e3d6000fd5b5050505050610bad565b826001600160a01b031663128acb0830848886610b3a57610b35600173fffd8963efd1fc6a5044308cca64b246694e7f0161145d565b610b4a565b610b4a6401000276a36001611484565b866040518663ffffffff1660e01b8152600401610b6b9594939291906114a4565b60408051808303816000875af1158015610b89573d6000803e3d6000fd5b505050506040513d601f19601f8201168201806040525081019061064491906114ea565b50505050505050565b604080516001600160a01b038481166024830152604480830185905283518084039091018152606490920183526020820180516001600160e01b031663a9059cbb60e01b1790529151600092839290871691610c12919061150e565b6000604051808303816000865af19150503d8060008114610c4f576040519150601f19603f3d011682016040523d82523d6000602084013e610c54565b606091505b5091509150811580610c825750805115801590610c82575080806020019051810190610c80919061152a565b155b15610160576040516312171d8360e31b815260040160405180910390fd5b600060015b8351811015610cdb57610cd1848281518110610cc357610cc361121a565b602002602001015184610e0d565b9250600101610ca5565b509092915050565b61ffff60b082901c166127108110610d0e5760405163c4c321d160e01b815260040160405180910390fd5b919050565b6000806000866001600160a01b0316630902f1ac6040518163ffffffff1660e01b8152600401606060405180830381865afa158015610d56573d6000803e3d6000fd5b505050506040513d601f19601f82011682018060405250810190610d7a9190611563565b509150915060008087610da057826001600160701b0316846001600160701b0316610db5565b836001600160701b0316836001600160701b03165b90925090506000610dc887612710611272565b610dd290896115b3565b905080610de1846127106115b3565b610deb919061125f565b610df583836115b3565b610dff91906115ca565b9a9950505050505050505050565b60008260a881901c60ff9081166001149060a083901c16610f0757610e37828286610a5389610ce3565b925082600003610e5a5760405163c4c321d160e01b815260040160405180910390fd5b610e6d610e668661084a565b8386610bb6565b816001600160a01b031663022c0d9f82610e875784610e8a565b60005b83610e96576000610e98565b855b6040516001600160e01b031960e085901b16815260048101929092526024820152306044820152608060648201526000608482015260a401600060405180830381600087803b158015610eea57600080fd5b505af1158015610efe573d6000803e3d6000fd5b50505050611019565b600180546001600160a01b0319166001600160a01b038416908117909155600090819063128acb0830858981610f5b57610f56600173fffd8963efd1fc6a5044308cca64b246694e7f0161145d565b610f6b565b610f6b6401000276a36001611484565b610f748d61084a565b604080516001600160a01b039092166020830152016040516020818303038152906040526040518663ffffffff1660e01b8152600401610fb89594939291906114a4565b60408051808303816000875af1158015610fd6573d6000803e3d6000fd5b505050506040513d601f19601f82011682018060405250810190610ffa91906114ea565b9150915082611009578161100b565b805b6110149061135f565b945050505b505092915050565b6001600160a01b038116811461103657600080fd5b50565b60008083601f84011261104b57600080fd5b50813567ffffffffffffffff81111561106357600080fd5b60208301915083602082850101111561107b57600080fd5b9250929050565b60008060008060006080868803121561109a57600080fd5b85356110a581611021565b94506020860135935060408601359250606086013567ffffffffffffffff8111156110cf57600080fd5b6110db88828901611039565b969995985093965092949392505050565b60008060008060006080868803121561110457600080fd5b853567ffffffffffffffff8082111561111c57600080fd5b818801915088601f83011261113057600080fd5b81358181111561113f57600080fd5b8960208260051b850101111561115457600080fd5b60209283019a909950918801359760408101359750606001359550909350505050565b6000806000806060858703121561118d57600080fd5b8435935060208501359250604085013567ffffffffffffffff8111156111b257600080fd5b6111be87828801611039565b95989497509550505050565b6000602082840312156111dc57600080fd5b81356111e781611021565b9392505050565b6000806040838503121561120157600080fd5b823561120c81611021565b946020939093013593505050565b634e487b7160e01b600052603260045260246000fd5b60006020828403121561124257600080fd5b5051919050565b634e487b7160e01b600052601160045260246000fd5b8082018082111561092457610924611249565b8181038181111561092457610924611249565b634e487b7160e01b600052604160045260246000fd5b600080604083850312156112ae57600080fd5b823567ffffffffffffffff808211156112c657600080fd5b818501915085601f8301126112da57600080fd5b81356020828211156112ee576112ee611285565b8160051b604051601f19603f8301168101818110868211171561131357611313611285565b60405292835281830193508481018201928984111561133157600080fd5b948201945b8386101561134f57853585529482019493820193611336565b9997909101359750505050505050565b6000600160ff1b820161137457611374611249565b5060000390565b60006020828403121561138d57600080fd5b81516111e781611021565b6040808252810183905260006001600160fb1b038411156113b857600080fd5b8360051b808660608501376020830193909352500160600192915050565b60005b838110156113f15781810151838201526020016113d9565b50506000910152565b600081518084526114128160208601602086016113d6565b601f01601f19169290920160200192915050565b84815283602082015260018060a01b038316604082015260806060820152600061145360808301846113fa565b9695505050505050565b6001600160a01b0382811682821603908082111561147d5761147d611249565b5092915050565b6001600160a01b0381811683821601908082111561147d5761147d611249565b6001600160a01b0386811682528515156020830152604082018590528316606082015260a0608082018190526000906114df908301846113fa565b979650505050505050565b600080604083850312156114fd57600080fd5b505080516020909101519092909150565b600082516115208184602087016113d6565b9190910192915050565b60006020828403121561153c57600080fd5b815180151581146111e757600080fd5b80516001600160701b0381168114610d0e57600080fd5b60008060006060848603121561157857600080fd5b6115818461154c565b925061158f6020850161154c565b9150604084015163ffffffff811681146115a857600080fd5b809150509250925092565b808202811582820484141761092457610924611249565b6000826115e757634e487b7160e01b600052601260045260246000fd5b50049056fea26469706673582212201882658634a9ba770f4633936baaca0c39103c67b6fa6f0536178f3ea07af6a364736f6c63430008180033', keccak: '0x163556685d18639f4c27452f95ccd53594b7b88e11d0ad3c527bd59e72941004', solc: '0.8.24+commit.e11b9ed9',
+  selKeeper: '0xaced1661', selSetKeeper: '0x748747e6' };
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+const isAddr = a => /^0x[0-9a-fA-F]{40}$/.test(a || '');
+const word32 = x => BigInt(x).toString(16).padStart(64, '0');
+
+function deploySection() {
+  if (typeof window === 'undefined' || !window.ethereum) return '';
+  return `<h3 class="section" style="margin-top:14px">🚀 Deploy kit &amp; 🤖 keeper</h3>
+    <div class="small">Deploy your own ArbExecutor from the connected wallet. That wallet becomes the permanent <b>owner</b> (it receives all profit and is the only account that can withdraw). Bytecode: solc ${DEPLOY.solc}, evm paris, optimizer 200, keccak <span class="mono">${DEPLOY.keccak.slice(0, 18)}…</span>; it matches <span class="mono">contracts/</span> in the repo.</div>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-sm primary" onclick="estimateDeploy()">Estimate deploy cost</button>
+      <button class="btn btn-sm primary" onclick="deployExecutor()">Deploy ArbExecutor</button>
+    </div>
+    <div class="detail-row" style="margin-top:10px"><span class="dk">Keeper (bot key: may execute, never withdraw)</span><span class="dv"><input id="kp-addr" class="mono" style="width:420px;max-width:100%" placeholder="0x… keeper address, or empty to revoke"></span></div>
+    <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-sm primary" onclick="readKeeper()">Read keeper</button>
+      <button class="btn btn-sm primary" onclick="setKeeperTx()">Set / revoke keeper</button>
+    </div>
+    <div id="dp-out" class="small" style="margin-top:8px"></div>`;
+}
+
+async function ensurePulse() {
+  if (!window.ethereum) throw new Error('No injected wallet detected.');
+  if (!state.walletAddr) throw new Error('Connect your wallet first.');
+  const cid = await window.ethereum.request({ method: 'eth_chainId' });
+  if (cid !== PULSECHAIN_ID) await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: PULSECHAIN_ID }] });
+}
+async function readAddr(to, sel) {
+  const j = await rpcFull('eth_call', [{ to, data: sel }, 'latest']);
+  if (j.error || !j.result || j.result.length < 66) return null;
+  return ('0x' + j.result.slice(26, 66)).toLowerCase();
+}
+async function estimateDeploy() {
+  const out = $('dp-out');
+  try {
+    if (!state.walletAddr) throw new Error('Connect your wallet first (the estimate runs from that address).');
+    out.textContent = 'Estimating at the latest block…';
+    const [g, p] = await Promise.all([rpcFull('eth_estimateGas', [{ from: state.walletAddr, data: DEPLOY.bytecode }]), rpcFull('eth_gasPrice', [])]);
+    if (g.error) throw new Error('Deploy would fail: ' + (g.error.message || 'estimateGas error'));
+    const gas = BigInt(g.result), price = BigInt(p.result), cost = gas * price;
+    out.innerHTML = `Deploy ≈ <b>${gas.toLocaleString('en-US')}</b> gas × ${(Number(price) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 0 })} gwei ≈ <b>${fmtUnits(cost, 18, 2)} PLS</b> (simulation, nothing sent).`;
+    return { gas, price };
+  } catch (e) { out.innerHTML = `<span class="profit-negative">${e.message || e}</span>`; return null; }
+}
+async function waitReceipt(hash, out, secs = 180) {
+  for (let t = 0; t < secs; t += 3) {
+    const j = await rpcFull('eth_getTransactionReceipt', [hash]).catch(() => null);
+    if (j && j.result) return j.result;
+    out.innerHTML = `Waiting for confirmation… ${t}s (tx <a class="mono" style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://scan.pulsechain.com/tx/${hash}">${short(hash)}</a>)`;
+    await new Promise(r => setTimeout(r, 3000));
+  }
+  return null;
+}
+async function deployExecutor() {
+  const out = $('dp-out');
+  try {
+    await ensurePulse();
+    const est = await estimateDeploy(); if (!est) return;
+    const owner = state.walletAddr;
+    if (!confirm(`Deploy ArbExecutor from ${owner}?\n\nThis account becomes the PERMANENT owner (cannot be changed).\nEstimated cost: ${fmtUnits(est.gas * est.price, 18, 2)} PLS.\nYour wallet will ask you to confirm.`)) { out.textContent = 'Cancelled.'; return; }
+    out.textContent = 'Confirm the deployment in your wallet…';
+    const gas = '0x' + (est.gas * 12n / 10n).toString(16); // +20% headroom
+    const hash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from: owner, data: DEPLOY.bytecode, value: '0x0', gas }] });
+    const rc = await waitReceipt(hash, out);
+    if (!rc) { out.innerHTML = `Not confirmed after 3 min. Check <a style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://scan.pulsechain.com/tx/${hash}">the tx</a>.`; return; }
+    if (rc.status !== '0x1' || !rc.contractAddress) { out.innerHTML = `<span class="profit-negative">Deployment reverted (tx ${short(hash)}).</span>`; return; }
+    const addr = rc.contractAddress, onChainOwner = await readAddr(addr, EXEC.selOwner);
+    $('ex-addr').value = addr; try { localStorage.setItem('amn_executor', addr); } catch (e) {}
+    out.innerHTML = `<span class="profit-positive">✅ Deployed at <a class="mono" style="color:var(--accent-cyan)" target="_blank" rel="noopener" href="https://scan.pulsechain.com/address/${addr}">${addr}</a></span><br>owner() = <span class="mono">${onChainOwner}</span> ${onChainOwner === owner ? '✅ matches your wallet' : '<span class="profit-negative">does not match!</span>'}. Gas used ${BigInt(rc.gasUsed).toLocaleString('en-US')}. The address was saved in this browser; next: <b>Dry run</b>.`;
+  } catch (e) { out.innerHTML = `<span class="profit-negative">${e && e.code === 4001 ? 'Rejected in wallet.' : (e.message || e)}</span>`; }
+}
+async function readKeeper() {
+  const out = $('dp-out'), to = $('ex-addr').value.trim();
+  if (!isAddr(to)) { out.innerHTML = '<span class="profit-negative">Enter your ArbExecutor address above.</span>'; return; }
+  const k = await readAddr(to, DEPLOY.selKeeper).catch(() => null);
+  out.innerHTML = k === null ? '<span class="profit-negative">keeper() not available: this executor predates the keeper role.</span>'
+    : k === ZERO_ADDR ? 'No keeper set (only the owner can execute).' : `Keeper: <span class="mono">${k}</span> (may call execute(); profits still go to the owner).`;
+}
+async function setKeeperTx() {
+  const out = $('dp-out'), to = $('ex-addr').value.trim(), raw = $('kp-addr').value.trim(), k = raw ? raw : ZERO_ADDR;
+  try {
+    if (!isAddr(to)) throw new Error('Enter your ArbExecutor address above.');
+    if (!isAddr(k)) throw new Error('Keeper must be a 0x address (40 hex chars), or empty to revoke.');
+    await ensurePulse();
+    const owner = await readAddr(to, EXEC.selOwner);
+    if (!owner) throw new Error('owner() failed: not an ArbExecutor at ' + to);
+    if (owner !== state.walletAddr) throw new Error(`Only the owner (${short(owner)}) can set the keeper; connected: ${short(state.walletAddr)}. Not sent.`);
+    if ((await readAddr(to, DEPLOY.selKeeper)) === null) throw new Error('This executor predates the keeper role (no keeper()). Deploy the new version.');
+    if (k.toLowerCase() === owner) throw new Error('The owner already can execute; use a separate bot address as keeper.');
+    out.textContent = 'Confirm in your wallet…';
+    const hash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from: state.walletAddr, to, data: DEPLOY.selSetKeeper + word32(k), value: '0x0' }] });
+    const rc = await waitReceipt(hash, out);
+    if (!rc || rc.status !== '0x1') throw new Error('setKeeper not confirmed / reverted (tx ' + hash + ')');
+    await readKeeper();
+  } catch (e) { out.innerHTML = `<span class="profit-negative">${e && e.code === 4001 ? 'Rejected in wallet.' : (e.message || e)}</span>`; }
+}
 </script>
 </body>
 </html>

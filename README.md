@@ -71,6 +71,13 @@ All addresses and fees were verified on-chain against live contract data. See th
 
 ## Changelog
 
+### v4.9 (2026-11-03)
+- ArbExecutor **keeper role**: the owner can appoint/revoke one bot key (`setKeeper`) that may only call `execute()`; `withdraw`/`setKeeper` stay owner-only; profit always goes to the owner. New error `NotAuthorized`. 3 new fork tests (14/14 pass).
+- **Deploy kit** in Trade Companion: Estimate deploy cost, Deploy ArbExecutor (wallet-signed, receipt + `owner()` check, address saved locally), Read / Set / revoke keeper. Connect & Send now accepts the keeper account.
+- `contracts/foundry.toml` pins solc 0.8.24, evm paris, optimizer 200; the page embeds exactly that bytecode (keccak `0x1635…1004`).
+- Fork end-to-end test: deploy → set keeper → dry run → keeper execute paid the owner 52.86 WPLS, but used 770,688 gas (~218 PLS), so it would have been net-negative live; the scanner's 350k 3-hop gas assumption is too low for V3 routes (recalibration on the backlog).
+- White paper v4.9 (new §3.11, §3.7 safety, §4 step 8, roadmap, history) + PDF regenerated; contracts/README rewritten.
+
 ### v4.8.1 (2026-11-03)
 - Trade Companion: opt-in 🔎 **Check with Piteas** — compares the route with the Piteas aggregator's whole-market round trip (2 quotes, local cap 6 req/min, clear "Piteas unavailable" message on errors). Read-only; the scanner never depends on Piteas.
 - Tide (seen in Piteas routes) identified on-chain as a Balancer-V3-style weighted pool (RISKOFF: HEX/INC/CST/PLSX/WPLS, 5/5/80/5/5 %, 0.30 % fee, small balances). Not scanned yet; documented.

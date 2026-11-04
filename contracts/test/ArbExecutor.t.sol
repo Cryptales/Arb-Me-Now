@@ -44,6 +44,7 @@ contract ArbExecutorForkTest is Test {
     ArbExecutor ex;
     Dumper dumper;
     address owner = address(0xA11CE);
+    address bot = address(0xB0B);
 
     function setUp() public {
         vm.createSelectFork(vm.envOr("PULSE_RPC", string("https://rpc.pulsechain.com")));
@@ -79,9 +80,14 @@ contract ArbExecutorForkTest is Test {
 
     /// @dev Tries decreasing sizes and returns the profit of the first one that succeeds.
     function runBest(uint256[] memory l, uint256 startSize) internal returns (uint256 profit, uint256 size) {
+        return runBestAs(owner, l, startSize);
+    }
+
+    function runBestAs(address caller, uint256[] memory l, uint256 startSize) internal returns (uint256 profit, uint256 size) {
+        uint256 callerBefore = IERC20(WPLS).balanceOf(caller);
         uint256 ownerBefore = IERC20(WPLS).balanceOf(owner);
         for (size = startSize; size > 1e15; size /= 2) {
-            vm.prank(owner);
+            vm.prank(caller);
             try ex.execute(l, size, 1, block.timestamp + 60) returns (uint256 p) {
                 profit = p;
                 break;
@@ -90,6 +96,7 @@ contract ArbExecutorForkTest is Test {
         assertGt(profit, 0, "no profitable size found");
         assertEq(IERC20(WPLS).balanceOf(owner) - ownerBefore, profit, "profit not sent to owner");
         assertEq(IERC20(WPLS).balanceOf(address(ex)), 0, "executor kept tokens");
+        if (caller != owner) assertEq(IERC20(WPLS).balanceOf(caller), callerBefore, "caller got paid");
         console.log("size (WPLS wei)", size);
         console.log("profit (WPLS wei)", profit);
     }
@@ -153,7 +160,7 @@ contract ArbExecutorForkTest is Test {
 
     function test_onlyOwner() public {
         uint256[] memory l = legs2(leg(PX2_WPLS_PLSX, WPLS, false, 29), leg(MM_WPLS_PLSX, PLSX, false, 25));
-        vm.expectRevert(ArbExecutor.NotOwner.selector);
+        vm.expectRevert(ArbExecutor.NotAuthorized.selector);
         ex.execute(l, 1e18, 0, block.timestamp + 60);
         vm.expectRevert(ArbExecutor.NotOwner.selector);
         ex.withdraw(WPLS, 1);
@@ -190,5 +197,44 @@ contract ArbExecutorForkTest is Test {
         vm.prank(owner);
         ex.withdraw(WPLS, 5e18);
         assertEq(IERC20(WPLS).balanceOf(owner), 5e18);
+    }
+
+    // ------------------------------------------------------------ keeper role
+
+    function test_keeper_canExecute_profitGoesToOwner() public {
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        assertEq(ex.keeper(), bot);
+        dumpV2(PX2_WPLS_PLSX, 29, 20);
+        uint256[] memory l = legs2(leg(MM_WPLS_PLSX, WPLS, false, 25), leg(PX2_WPLS_PLSX, PLSX, false, 29));
+        runBestAs(bot, l, IERC20(WPLS).balanceOf(MM_WPLS_PLSX) / 50); // asserts owner paid, bot not
+    }
+
+    function test_keeper_cannotWithdraw_orSetKeeper() public {
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        deal(WPLS, address(ex), 5e18);
+        vm.prank(bot);
+        vm.expectRevert(ArbExecutor.NotOwner.selector);
+        ex.withdraw(WPLS, 5e18);
+        vm.prank(bot);
+        vm.expectRevert(ArbExecutor.NotOwner.selector);
+        ex.setKeeper(bot);
+        assertEq(IERC20(WPLS).balanceOf(address(ex)), 5e18);
+    }
+
+    function test_keeper_revoked() public {
+        vm.startPrank(owner);
+        ex.setKeeper(bot);
+        ex.setKeeper(address(0));
+        vm.stopPrank();
+        assertEq(ex.keeper(), address(0));
+        uint256[] memory l = legs2(leg(PX2_WPLS_PLSX, WPLS, false, 29), leg(MM_WPLS_PLSX, PLSX, false, 25));
+        vm.prank(bot);
+        vm.expectRevert(ArbExecutor.NotAuthorized.selector);
+        ex.execute(l, 1e18, 0, block.timestamp + 60);
+        vm.expectRevert(ArbExecutor.NotAuthorized.selector); // zero address can never act as keeper
+        vm.prank(address(0));
+        ex.execute(l, 1e18, 0, block.timestamp + 60);
     }
 }

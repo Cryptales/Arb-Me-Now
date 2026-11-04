@@ -41,6 +41,9 @@ contract ArbExecutor {
     uint256 internal constant KIND_V3 = 1;
 
     address public immutable owner;
+    /// @notice Optional bot key (v4.9 keeper role): may call execute() only. It can never
+    ///         withdraw, and profits always go to `owner`. Zero = no keeper.
+    address public keeper;
 
     /// @dev The only pool allowed to call back right now (zero when idle).
     address private _expected;
@@ -48,6 +51,7 @@ contract ArbExecutor {
     uint256 private _status = 1;
 
     error NotOwner();
+    error NotAuthorized();
     error Expired();
     error BadRoute();
     error BadCallback();
@@ -57,9 +61,15 @@ contract ArbExecutor {
     error NoProfit(uint256 returned, uint256 required);
 
     event Executed(address indexed token, uint256 amountIn, uint256 profit, uint256 legs);
+    event KeeperSet(address indexed previous, address indexed current);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    modifier onlyOwnerOrKeeper() {
+        if (msg.sender != owner && (msg.sender != keeper || keeper == address(0))) revert NotAuthorized();
         _;
     }
 
@@ -73,10 +83,10 @@ contract ArbExecutor {
     /// @param amountIn  Amount of the start token S fed into leg 0 (flash-borrowed).
     /// @param minProfit Minimum S that must be left over after repaying leg 0; otherwise revert.
     /// @param deadline  Unix timestamp after which the call reverts.
-    /// @return profit   S sent to the owner.
+    /// @return profit   S sent to the owner (never to the keeper).
     function execute(uint256[] calldata legs, uint256 amountIn, uint256 minProfit, uint256 deadline)
         external
-        onlyOwner
+        onlyOwnerOrKeeper
         returns (uint256 profit)
     {
         if (block.timestamp > deadline) revert Expired();
@@ -106,7 +116,13 @@ contract ArbExecutor {
         emit Executed(tokenS, amountIn, profit, n);
     }
 
-    /// @notice Recover any token held by the contract.
+    /// @notice Set or replace the keeper; pass address(0) to revoke.
+    function setKeeper(address newKeeper) external onlyOwner {
+        emit KeeperSet(keeper, newKeeper);
+        keeper = newKeeper;
+    }
+
+    /// @notice Recover any token held by the contract (owner only; the keeper cannot call this).
     function withdraw(address token, uint256 amount) external onlyOwner {
         _pay(token, owner, amount);
     }
