@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9.2</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9.3</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.9.2 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.9.3 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -275,6 +275,9 @@
         <li>Supported pools (callbacks verified on-chain): PulseX v1/v2 (<code>uniswapV2Call</code>), 9mm v2 (<code>pancakeCall</code>), LibertySwap V3 (<code>libertyV3SwapCallback</code>). Fee-on-transfer tokens are not supported.</li>
         <li>In Trade Companion, enter your deployed address, then <b>Build calldata</b> and <b>Dry run</b>. The dry run is an <code>eth_call</code> from the owner, so nothing is signed or sent. Send the calldata from your owner wallet to execute.</li>
         <li>Fork-tested on PulseChain: on an artificially created gap, the contract's profit matched the scanner's prediction exactly for v2→v2 and within 2 wei for a v3 leg. Live routes currently revert with <code>NoProfit</code>, as expected.</li></ul></div>
+    <div class="docs-section"><h4>New in v4.9.3: ⛽ mainnet-calibrated gas</h4>
+      <ul><li>On the first mainnet dry run, a 3-hop V2 route measured <b>627,914 gas</b>, but the table had estimated 570k (about 9% low). The base cost per route is now <b>210k</b> instead of 150k, so that route is estimated at <b>630k</b>. Every "net after gas" figure is now a little more conservative.</li>
+        <li>The dry run's <code>eth_estimateGas</code> is still the number to trust before you send.</li></ul></div>
     <div class="docs-section"><h4>New in v4.9.2: ⏱ longer send deadline</h4>
       <ul><li>First mainnet test: the transaction sent from the ZKX wallet reached the ArbExecutor and passed the owner check, but it reverted with <code>Expired()</code> because it was mined about 16.6 minutes after its 120 s deadline. Because it reverted early, it cost only 9.73 PLS in gas.</li>
         <li>Calldata now gets a deadline of <b>now + 600 s</b>. Dry-run, click Send and approve the wallet pop-up straight away. If the pop-up sat for minutes, reject it and send again. <code>minProfit</code> still protects every trade.</li></ul></div>
@@ -298,7 +301,7 @@
         <li>Trade Companion has an opt-in <b>Connect &amp; Send</b> button. It connects your injected wallet (MetaMask), switches to PulseChain (chain 369), checks that the connected account is the ArbExecutor <code>owner()</code>, then asks your wallet to sign and send the built calldata. Nothing is sent unless you click Send <i>and</i> approve in your wallet.</li>
         <li>The page still never sees or stores private keys; signing happens inside your wallet. Always run <b>Dry run</b> first; a public-mempool tx can still be front-run and revert (gas lost).</li></ul></div>
     <div class="docs-section"><h4>Limitations</h4>
-      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the adaptive multi-tick depth (up to the slider cap, 1–8 intervals) to v3 legs, and lists only profitable routes. Gas is estimated per route (live eth_gasPrice × (150k + 140k per V2 hop + 230k per V3 hop), valued at WPLS/USD; calibrated on fork measurements) and the Trade Companion dry run shows the measured eth_estimateGas and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the tick intervals read per direction (adaptive, capped by the V3 tick depth slider). Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. The page only sends a transaction when you click Connect &amp; Send and approve it in your own wallet; otherwise it is read-only. MEV and price movement between dry run and execution can still make a transaction revert (gas lost). Verify on-chain before trading.</li></ul></div>
+      <ul><li>2-pool cycles and triangular 3-hop routes (S → Y → Z → S over three distinct pools) are checked. The triangular scan applies the 10% reserve cap to v2 legs and the adaptive multi-tick depth (up to the slider cap, 1–8 intervals) to v3 legs, and lists only profitable routes. Gas is estimated per route (live eth_gasPrice × (210k + 140k per V2 hop + 230k per V3 hop), valued at WPLS/USD; calibrated on fork measurements) and the Trade Companion dry run shows the measured eth_estimateGas and shown as net profit; MEV and pending-block state are not modelled. v3 depth is limited to the tick intervals read per direction (adaptive, capped by the V3 tick depth slider). Alerts (🔔 toggle) fire a sound and a browser notification once per newly profitable route, net of gas and above the min-bps filter; they only run while this tab is open, so pair them with Auto-refresh. Bridge checks are non-atomic. The page only sends a transaction when you click Connect &amp; Send and approve it in your own wallet; otherwise it is read-only. MEV and price movement between dry run and execution can still make a transaction revert (gas lost). Verify on-chain before trading.</li></ul></div>
   </div>
 </div>
 <script>
@@ -961,7 +964,7 @@ function scanTriangular(pools, startSym, userAmountRaw) {
 // Gas model (v4.9.1), calibrated on PulseChain fork measurements of ArbExecutor.execute:
 // V2+V2 383k, V3-flash+V2 428k, V2-flash+V3 573k, V2x3 346k (warm, call only); live-style 3-leg V3 route 770,688 (full tx, cold).
 // Estimate = base (tx + flash/callback overhead) + per-hop cost by pool kind, rounded up for cold storage access.
-const GAS_BASE = 150000, GAS_HOP_V2 = 140000, GAS_HOP_V3 = 230000;
+const GAS_BASE = 210000, GAS_HOP_V2 = 140000, GAS_HOP_V3 = 230000;
 const routeGas = legs => GAS_BASE + legs.reduce((g, l) => g + (l && l.pool && l.pool.kind === 'v3' ? GAS_HOP_V3 : GAS_HOP_V2), 0);
 const GAS_UNITS_2HOP = routeGas([{}, {}]), GAS_UNITS_3HOP = routeGas([{}, {}, {}]); // all-V2 reference values for the summary line
 
@@ -1181,7 +1184,7 @@ function renderRows() {
         <td>${routeCell}</td>
         <td class="mono ${r.midEdge > 0 ? 'profit-positive' : 'profit-negative'}">${fmtPct(r.midEdge)}</td>
         <td>${optCell}</td>
-        <td class="mono">${r.prof ? fmtUsd(r.profUsd) + `<div class="small" style="color:${r.netUsd != null && r.netUsd > 0 ? 'var(--accent-green, #3fb950)' : 'var(--accent-red, #f85149)'}">net after gas: ${r.netUsd != null ? fmtUsd(r.netUsd) : 'n/a'} <span title="estimated gas units for this route (V2 hop 140k, V3 hop 230k, base 150k)">(~${Math.round(r.gasUnits/1000)}k gas)</span></div>` : '—'}</td>
+        <td class="mono">${r.prof ? fmtUsd(r.profUsd) + `<div class="small" style="color:${r.netUsd != null && r.netUsd > 0 ? 'var(--accent-green, #3fb950)' : 'var(--accent-red, #f85149)'}">net after gas: ${r.netUsd != null ? fmtUsd(r.netUsd) : 'n/a'} <span title="estimated gas units for this route (V2 hop 140k, V3 hop 230k, base 210k)">(~${Math.round(r.gasUnits/1000)}k gas)</span></div>` : '—'}</td>
         <td>${userCell}</td>
         <td>${flags.join('')}</td>
         <td><button class="sm" onclick="showCompanion(${idx})">Inspect</button></td></tr>`;
@@ -1191,7 +1194,7 @@ function renderRows() {
   const nNet = state.rows.filter(r => r.prof && !r.suspicious && r.netUsd != null && r.netUsd > 0).length;
   const g2 = state.gasUsd ? state.gasUsd(GAS_UNITS_2HOP) : null, g3 = state.gasUsd ? state.gasUsd(GAS_UNITS_3HOP) : null;
   const gp = state.gasPrice != null ? (Number(state.gasPrice) / 1e9).toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' gwei' : 'unavailable';
-  $('results-summary').textContent = `Block ${state.block}: ${state.rows.filter(r=>r.kind!=='tri').length} two-pool cycles evaluated + ${state.rows.filter(r=>r.kind==='tri').length} profitable triangular routes for ${S}; ${nProf} profitable before gas, ${nNet} after estimated gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas estimate: ${gp}; per route: base 150k + 140k per V2 hop + 230k per V3 hop (all-V2 2-hop ≈ ${g2 != null ? fmtUsd(g2) : 'n/a'} at ${GAS_UNITS_2HOP.toLocaleString('en-US')} gas, all-V2 3-hop ≈ ${g3 != null ? fmtUsd(g3) : 'n/a'} at ${GAS_UNITS_3HOP.toLocaleString('en-US')} gas; V3 legs cost more).`;
+  $('results-summary').textContent = `Block ${state.block}: ${state.rows.filter(r=>r.kind!=='tri').length} two-pool cycles evaluated + ${state.rows.filter(r=>r.kind==='tri').length} profitable triangular routes for ${S}; ${nProf} profitable before gas, ${nNet} after estimated gas (excluding suspicious). Hidden: ${hiddenSus} suspicious/dust, ${hiddenProf} by profit filter. Gas estimate: ${gp}; per route: base 210k (mainnet-calibrated) + 140k per V2 hop + 230k per V3 hop (all-V2 2-hop ≈ ${g2 != null ? fmtUsd(g2) : 'n/a'} at ${GAS_UNITS_2HOP.toLocaleString('en-US')} gas, all-V2 3-hop ≈ ${g3 != null ? fmtUsd(g3) : 'n/a'} at ${GAS_UNITS_3HOP.toLocaleString('en-US')} gas; V3 legs cost more).`;
 }
 
 function legDetail(leg, label) {

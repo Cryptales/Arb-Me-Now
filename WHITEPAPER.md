@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.9.2)
+# Arb-Me-Now — Process Manual & White Paper (v4.9.3)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -116,17 +116,17 @@ The old flat estimates (250,000 gas for 2 hops, 350,000 for 3) came from generic
 | V2 + V2 + V2 triangular | 346,153 |
 | 3-leg route with V3 legs (full transaction, cold) | 770,688 |
 
-**Model:** estimated gas = **150,000 base** (transaction + flash/callback overhead) + **140,000 per V2 hop** + **230,000 per V3 hop**. Values are rounded up to allow for cold storage access.
+**Model (v4.9.3):** estimated gas = **210,000 base** (transaction + flash/callback overhead) + **140,000 per V2 hop** + **230,000 per V3 hop**. Values are rounded up to allow for cold storage access. v4.9.1 used a 150,000 base. It was raised by 60,000 after the first mainnet dry run measured 627,914 gas for a V2 × 3 route the old model put at 570,000 (§3.13). The new model gives 630,000.
 
-| Route | Old estimate | New estimate |
-|---|---:|---:|
-| V2 + V2 | 250,000 | 430,000 |
-| V3 + V2 | 250,000 | 520,000 |
-| V2 × 3 | 350,000 | 570,000 |
-| V3 + V3 + V2 | 350,000 | 750,000 |
-| V3 × 3 | 350,000 | 840,000 |
+| Route | Pre-v4.9.1 (flat) | v4.9.1 (150k base) | v4.9.3 (210k base) |
+|---|---:|---:|---:|
+| V2 + V2 | 250,000 | 430,000 | 490,000 |
+| V3 + V2 | 250,000 | 520,000 | 580,000 |
+| V2 × 3 | 350,000 | 570,000 | 630,000 (mainnet measured 627,914) |
+| V3 + V3 + V2 | 350,000 | 750,000 | 810,000 (fork measured 770,688) |
+| V3 × 3 | 350,000 | 840,000 | 900,000 |
 
-- Each row's "net after gas" uses its own estimate and shows it, e.g. "(~520k gas)". The summary line states the model.
+- Each row's "net after gas" uses its own estimate and shows it, e.g. "(~580k gas)". The summary line states the model.
 - **Dry run now measures real gas.** After a successful `eth_call`, the page also calls `eth_estimateGas` for the exact transaction from the owner and shows its gas, its cost in PLS/USD at the live gas price and, for WPLS routes, **net profit after gas**. That figure overrides the model.
 - The model is still an estimate. Tick crossings, token transfer logic and storage warmth change real gas by tens of thousands. Always rely on the dry-run number before sending.
 
@@ -134,7 +134,7 @@ The old flat estimates (250,000 gas for 2 hops, 350,000 for 3) came from generic
 
 **Deploy (verified on-chain, 4 Nov 2026).** ArbExecutor was deployed from the owner's ZKX wallet with the in-app Deploy button at `0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd`. It used 1,297,519 gas. Checks run against https://rpc.pulsechain.com: `owner()` returns the deploying wallet, `keeper()` is unset (0), and the creation bytecode's keccak matches the pinned build artifact. The runtime bytecode differs from the artifact only at the six offsets where the immutable owner is embedded, which is expected.
 
-**Dry run.** A 3-leg V2 route (9mm 25 bps → 9mm 25 bps → PulseX 29 bps, 130.541 WPLS in, min profit 5.70 WPLS) returned "Would succeed" with **+11.396 WPLS before gas**. `eth_estimateGas` measured **627,914 gas**, about 233 PLS at 371,101 gwei, so the trade was **about −221.6 WPLS net**. The §3.12 model estimated 570,000 gas for this route type, about 9% low. It is kept for now; dry-run gas remains the number to trust.
+**Dry run.** A 3-leg V2 route (9mm 25 bps → 9mm 25 bps → PulseX 29 bps, 130.541 WPLS in, min profit 5.70 WPLS) returned "Would succeed" with **+11.396 WPLS before gas**. `eth_estimateGas` measured **627,914 gas**, about 233 PLS at 371,101 gwei, so the trade was **about −221.6 WPLS net**. The §3.12 model estimated 570,000 gas for this route type, about 9% low. **Fixed in v4.9.3:** the base was raised to 210,000, so this route is now estimated at 630,000. Dry-run gas is still the number to trust.
 
 **Live test tx** `0x5e4ab9f20cd6274093e4f8ad8b3118c397d79473648d54088bfb885b8993d66d` (block 27,969,496). It was sent from the owner wallet to the executor and **reverted** with revert data `0x203d82d8` = `Expired()`. The calldata deadline was 1,793,771,000; the block timestamp was 1,793,771,995, so the tx landed **995 s (~16.6 min) after its deadline**. It used 23,723 gas at 410,031 gwei, so it **cost 9.73 PLS**. The wallet had shown a 301 PLS *maximum* fee; that is a cap, not the charge. No flash loan or swap ran.
 
@@ -152,7 +152,7 @@ What this proves: **ZKX can sign and broadcast `execute()` to the contract, and 
 5. Click **Inspect** to open the Trade Companion. It shows reserves or v3 state for every leg, the depth caps, and the exact BigInt calculation.
 6. **Before acting on any row:**
    - Re-scan to confirm the opportunity is still there in a fresh block.
-   - Check the **net after gas** line. Gas is estimated from the live `eth_gasPrice` × a per-route estimate (150k base + 140k per V2 hop + 230k per V3 hop, §3.12), valued at WPLS/USD. The Trade Companion **Dry run** shows the measured `eth_estimateGas` figure and net after gas. Use that number before sending.
+   - Check the **net after gas** line. Gas is estimated from the live `eth_gasPrice` × a per-route estimate (210k base + 140k per V2 hop + 230k per V3 hop, §3.12), valued at WPLS/USD. The Trade Companion **Dry run** shows the measured `eth_estimateGas` figure and net after gas. Use that number before sending.
    - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
    - Check the pool addresses on scan.pulsechain.com.
 7. **Alerts (v4.5):** tick **🔔 Alert on new profitable route** and allow browser notifications when asked. Pair it with **Auto-refresh every 15 s**. The scanner beeps, shows a banner and sends a notification **once** for each newly profitable route that is ≥ your min bps and still positive after gas (suspicious rows never alert). Alerts only work while the tab stays open.
@@ -178,7 +178,7 @@ What this proves: **ZKX can sign and broadcast `execute()` to the contract, and 
 
 ## 6. Risks and limitations
 
-- Gas is an estimate (per-route gas units × live gas price); on the first mainnet dry run the model was ~9% below measured gas (§3.13). A tx that lands after its deadline reverts with `Expired()` and costs only the small revert gas. MEV and pending-block state are not modelled.
+- Gas is an estimate (per-route gas units × live gas price); on the first mainnet dry run the v4.9.1 model was ~9% below measured gas; v4.9.3 recalibrated it (§3.13). Real gas still varies by tens of thousands of units per route. A tx that lands after its deadline reverts with `Expired()` and costs only the small revert gas. MEV and pending-block state are not modelled.
 - v3 depth is limited to the adaptive tick depth (max 8 intervals per direction); liquidity beyond that is not modelled.
 - ArbExecutor: a public-mempool tx can be front-run or the price can move after the dry run; then it reverts and gas is lost. The contract is unaudited; use small sizes first.
 - Alerts run in the browser only: the tab must stay open, and the browser or OS may block notifications or sound.
@@ -204,6 +204,7 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 10. Version history
 
+- **v4.9.3:** Gas model recalibrated on mainnet. The per-route base rises from 150k to 210k (V2 and V3 hop costs unchanged), so the V2 × 3 estimate is now 630k vs 627,914 measured. Every net-after-gas figure is slightly more conservative.
 - **v4.9.2:** First mainnet deploy recorded (ArbExecutor `0xd5da…30bd`, owner verified). The live test from ZKX reached the contract but reverted `Expired()` after landing ~16.6 min late (9.73 PLS gas). Calldata deadline raised from 120 s to 600 s. Dry-run gas was 627,914 vs the 570k model estimate.
 - **v4.9.1:** Gas model recalibrated from fork measurements: per-route 150k base + 140k per V2 hop + 230k per V3 hop (was flat 250k/350k, ~2.2× too low for V3 routes). Dry run now shows measured `eth_estimateGas`, PLS/USD cost and net-after-gas.
 - **v4.9:** ArbExecutor keeper role (execute-only bot key; owner-only withdraw/setKeeper; profit to owner; 3 new fork tests, 14/14). Deploy kit: pinned paris build, in-app Estimate / Deploy / Set-keeper via the connected wallet; Send accepts the keeper.

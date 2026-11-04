@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.9.2
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.9.3
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -50,7 +50,7 @@ All addresses and fees were verified on-chain against live contract data. See th
 ## Limitations
 
 - **2-pool round trips** and **triangular 3-hop routes** (S → Y → Z → S over three distinct pools) are checked. Triangular legs use the 10% reserve cap (v2) and multi-tick depth (v3); only profitable triangular routes are listed.
-- Gas is **estimated** (live gas price × fixed gas units) and shown as net profit; MEV is not modelled.
+- Gas is **estimated** (live gas price × per-route gas units) and shown as net profit; MEV is not modelled.
 - LibertySwap V3 depth is modelled across up to **4 tick intervals per direction** (v4.5); deeper liquidity is not modelled.
 - 🔔 Alerts run in the browser only — the tab must stay open.
 - Bridge checks are **non-atomic** — the cross-chain price comparison excludes gas, slippage, and bridge-crossing time. Quotes are informational only.
@@ -70,6 +70,10 @@ All addresses and fees were verified on-chain against live contract data. See th
 ---
 
 ## Changelog
+
+### v4.9.3 (2026-11-04)
+- **Gas model recalibrated on mainnet**: the per-route base rises from 150k to 210k; the costs per V2 hop (140k) and per V3 hop (230k) are unchanged. The V2×3 estimate is now 630k, against 627,914 measured on the first mainnet dry run (it was 570k, ~9% low). Every net-after-gas figure is now a little more conservative.
+- White paper v4.9.3 (§3.12 model + table, §3.13, §4 step 6, limitations, history) + PDF regenerated.
 
 ### v4.9.2 (2026-11-04)
 - **First mainnet deploy recorded**: ArbExecutor `0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd` (owner verified on-chain, 1,297,519 gas).
@@ -120,7 +124,7 @@ All addresses and fees were verified on-chain against live contract data. See th
 - White paper / process manual updated to v4.5.
 
 ### v4.4 (2026-11-01)
-- Gas-adjusted net profit (live eth_gasPrice × per-route estimate: 150k + 140k/V2 hop + 230k/V3 hop; dry run shows measured eth_estimateGas).
+- Gas-adjusted net profit (live eth_gasPrice × per-route estimate: 210k + 140k/V2 hop + 230k/V3 hop since v4.9.3; dry run shows measured eth_estimateGas).
 - Process manual: see [WHITEPAPER.md](WHITEPAPER.md).
 - Old dashboard.html / trade-companion.html now redirect to the scanner.
 - Added triangular 3-hop route search (toggle in Settings), with optimal sizing and a three-leg Trade Companion view.
