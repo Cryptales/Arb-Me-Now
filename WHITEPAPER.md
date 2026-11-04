@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v4.9.1)
+# Arb-Me-Now — Process Manual & White Paper (v4.9.2)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -130,6 +130,18 @@ The old flat estimates (250,000 gas for 2 hops, 350,000 for 3) came from generic
 - **Dry run now measures real gas.** After a successful `eth_call`, the page also calls `eth_estimateGas` for the exact transaction from the owner and shows its gas, its cost in PLS/USD at the live gas price and, for WPLS routes, **net profit after gas**. That figure overrides the model.
 - The model is still an estimate. Tick crossings, token transfer logic and storage warmth change real gas by tens of thousands. Always rely on the dry-run number before sending.
 
+### 3.13 First mainnet deploy and live test (v4.9.2)
+
+**Deploy (verified on-chain, 4 Nov 2026).** ArbExecutor was deployed from the owner's ZKX wallet with the in-app Deploy button at `0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd`. It used 1,297,519 gas. Checks run against https://rpc.pulsechain.com: `owner()` returns the deploying wallet, `keeper()` is unset (0), and the creation bytecode's keccak matches the pinned build artifact. The runtime bytecode differs from the artifact only at the six offsets where the immutable owner is embedded, which is expected.
+
+**Dry run.** A 3-leg V2 route (9mm 25 bps → 9mm 25 bps → PulseX 29 bps, 130.541 WPLS in, min profit 5.70 WPLS) returned "Would succeed" with **+11.396 WPLS before gas**. `eth_estimateGas` measured **627,914 gas**, about 233 PLS at 371,101 gwei, so the trade was **about −221.6 WPLS net**. The §3.12 model estimated 570,000 gas for this route type, about 9% low. It is kept for now; dry-run gas remains the number to trust.
+
+**Live test tx** `0x5e4ab9f20cd6274093e4f8ad8b3118c397d79473648d54088bfb885b8993d66d` (block 27,969,496). It was sent from the owner wallet to the executor and **reverted** with revert data `0x203d82d8` = `Expired()`. The calldata deadline was 1,793,771,000; the block timestamp was 1,793,771,995, so the tx landed **995 s (~16.6 min) after its deadline**. It used 23,723 gas at 410,031 gwei, so it **cost 9.73 PLS**. The wallet had shown a 301 PLS *maximum* fee; that is a cap, not the charge. No flash loan or swap ran.
+
+What this proves: **ZKX can sign and broadcast `execute()` to the contract, and the owner check passes** (otherwise the revert would have been `NotAuthorized`). What failed was timing. The 120 s deadline was too short for the delay between clicking Send and the transaction being mined. The likely cause is the time spent in the wallet pop-up or in the wallet's queue; this is a hypothesis, not confirmed. Because the route was net-negative after gas, the revert actually avoided a loss of about 220 PLS.
+
+**Change in v4.9.2:** the calldata deadline is now **now + 600 s**. The deadline is a safety net against stale prices, and `minProfit` still protects every trade, so the longer window doesn't add price risk to a trade that still meets min profit. Procedure: dry-run, click Send, and approve the wallet pop-up straight away. If it sat for more than a few minutes, reject it and rebuild.
+
 ## 4. Operating Procedure (step by step)
 
 1. Open https://cryptales.github.io/Arb-Me-Now/.
@@ -144,7 +156,7 @@ The old flat estimates (250,000 gas for 2 hops, 350,000 for 3) came from generic
    - Allow for MEV and front-running risk. A public mempool trade can be sandwiched.
    - Check the pool addresses on scan.pulsechain.com.
 7. **Alerts (v4.5):** tick **🔔 Alert on new profitable route** and allow browser notifications when asked. Pair it with **Auto-refresh every 15 s**. The scanner beeps, shows a banner and sends a notification **once** for each newly profitable route that is ≥ your min bps and still positive after gas (suspicious rows never alert). Alerts only work while the tab stays open.
-8. **Execute (v4.6, optional):** deploy your own ArbExecutor once, either with **🚀 Deploy ArbExecutor** in Trade Companion (v4.9; signed in your wallet) or with `forge create src/ArbExecutor.sol:ArbExecutor --rpc-url https://rpc.pulsechain.com --interactive --broadcast` on your own machine. Optionally set a keeper (§3.11). In Trade Companion, enter its address, keep or edit size and min profit (default 50% of expected), click **Build calldata**, then **Dry run** (an `eth_call` from the owner; nothing is signed). If it says "Would succeed", send the calldata from your owner wallet (value 0) before the 120 s deadline.
+8. **Execute (v4.6, optional):** deploy your own ArbExecutor once, either with **🚀 Deploy ArbExecutor** in Trade Companion (v4.9; signed in your wallet) or with `forge create src/ArbExecutor.sol:ArbExecutor --rpc-url https://rpc.pulsechain.com --interactive --broadcast` on your own machine. Optionally set a keeper (§3.11). In Trade Companion, enter its address, keep or edit size and min profit (default 50% of expected), click **Build calldata**, then **Dry run** (an `eth_call` from the owner; nothing is signed). If it says "Would succeed", send the calldata from your owner wallet (value 0) before the 600 s deadline (v4.9.2; was 120 s). Approve the wallet pop-up promptly: the deadline is fixed when you click Send, and a tx that lands later reverts with `Expired()`.
 9. **Piteas cross-check (v4.8.1, optional):** in Trade Companion, click **Check with Piteas** to compare the route with the aggregator's whole-market round trip (2 requests; max 6 per minute). Use it sparingly.
 10. For bridge checks, treat the edge as an upper bound. Gas on both chains, bridge time and slippage reduce it.
 
@@ -166,7 +178,7 @@ The old flat estimates (250,000 gas for 2 hops, 350,000 for 3) came from generic
 
 ## 6. Risks and limitations
 
-- Gas is an estimate (fixed gas units × live gas price). MEV and pending-block state are not modelled.
+- Gas is an estimate (per-route gas units × live gas price); on the first mainnet dry run the model was ~9% below measured gas (§3.13). A tx that lands after its deadline reverts with `Expired()` and costs only the small revert gas. MEV and pending-block state are not modelled.
 - v3 depth is limited to the adaptive tick depth (max 8 intervals per direction); liquidity beyond that is not modelled.
 - ArbExecutor: a public-mempool tx can be front-run or the price can move after the dry run; then it reverts and gas is lost. The contract is unaudited; use small sizes first.
 - Alerts run in the browser only: the tab must stay open, and the browser or OS may block notifications or sound.
@@ -188,10 +200,11 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 9. Roadmap
 
-first mainnet deploy + small live test · v4.10 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
+~~first mainnet deploy~~ (done, §3.13) · first profitable live trade when a net-positive route appears · v4.10 private/bundled submission (MEV protection) · v5.0 server-side / Telegram alerts · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
 
 ## 10. Version history
 
+- **v4.9.2:** First mainnet deploy recorded (ArbExecutor `0xd5da…30bd`, owner verified). The live test from ZKX reached the contract but reverted `Expired()` after landing ~16.6 min late (9.73 PLS gas). Calldata deadline raised from 120 s to 600 s. Dry-run gas was 627,914 vs the 570k model estimate.
 - **v4.9.1:** Gas model recalibrated from fork measurements: per-route 150k base + 140k per V2 hop + 230k per V3 hop (was flat 250k/350k, ~2.2× too low for V3 routes). Dry run now shows measured `eth_estimateGas`, PLS/USD cost and net-after-gas.
 - **v4.9:** ArbExecutor keeper role (execute-only bot key; owner-only withdraw/setKeeper; profit to owner; 3 new fork tests, 14/14). Deploy kit: pinned paris build, in-app Estimate / Deploy / Set-keeper via the connected wallet; Send accepts the keeper.
 - **v4.8.1:** Opt-in Piteas aggregator cross-check in Trade Companion (2 quotes, local 6/min guard, graceful "unavailable" handling); Tide venue identified on-chain as a Balancer-V3 weighted pool and documented (not scanned).

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9.1</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v4.9.2</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v4.9.1 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v4.9.2 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -275,6 +275,9 @@
         <li>Supported pools (callbacks verified on-chain): PulseX v1/v2 (<code>uniswapV2Call</code>), 9mm v2 (<code>pancakeCall</code>), LibertySwap V3 (<code>libertyV3SwapCallback</code>). Fee-on-transfer tokens are not supported.</li>
         <li>In Trade Companion, enter your deployed address, then <b>Build calldata</b> and <b>Dry run</b>. The dry run is an <code>eth_call</code> from the owner, so nothing is signed or sent. Send the calldata from your owner wallet to execute.</li>
         <li>Fork-tested on PulseChain: on an artificially created gap, the contract's profit matched the scanner's prediction exactly for v2→v2 and within 2 wei for a v3 leg. Live routes currently revert with <code>NoProfit</code>, as expected.</li></ul></div>
+    <div class="docs-section"><h4>New in v4.9.2: ⏱ longer send deadline</h4>
+      <ul><li>First mainnet test: the transaction sent from the ZKX wallet reached the ArbExecutor and passed the owner check, but it reverted with <code>Expired()</code> because it was mined about 16.6 minutes after its 120 s deadline. Because it reverted early, it cost only 9.73 PLS in gas.</li>
+        <li>Calldata now gets a deadline of <b>now + 600 s</b>. Dry-run, click Send and approve the wallet pop-up straight away. If the pop-up sat for minutes, reject it and send again. <code>minProfit</code> still protects every trade.</li></ul></div>
     <div class="docs-section"><h4>New in v4.9.1: ⛽ realistic gas</h4>
       <ul><li>The old flat gas estimates (250k for 2 hops, 350k for 3) were far too low for ArbExecutor routes. On a fork, a 3-leg route with V3 legs used <b>770,688 gas</b>. Each route is now estimated as <b>150k + 140k per V2 hop + 230k per V3 hop</b>, and each row shows its figure, e.g. "(~520k gas)".</li>
         <li><b>Dry run</b> now also runs <code>eth_estimateGas</code> for the exact transaction and shows the gas, its PLS/USD cost and, for WPLS routes, <b>net profit after gas</b>. Trust that number over the table estimate.</li></ul></div>
@@ -1342,10 +1345,10 @@ function buildExec() {
   const dS = TOKENS[ex.S].dec, out = $('ex-out');
   const size = parseUnits($('ex-size').value, dS), minP = parseUnits($('ex-min').value, dS);
   if (size <= 0n) { out.innerHTML = '<span class="profit-negative">Enter an input size.</span>'; return null; }
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 120);
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
   const data = encodeExecute(ex.legs.map(packLeg), size, minP, deadline);
   $('ex-data').style.display = 'block';
-  $('ex-data').textContent = `to:       ${$('ex-addr').value.trim() || '(your ArbExecutor)'}\nvalue:    0\ndeadline: ${deadline} (now + 120 s)\ndata:     ${data}`;
+  $('ex-data').textContent = `to:       ${$('ex-addr').value.trim() || '(your ArbExecutor)'}\nvalue:    0\ndeadline: ${deadline} (now + 600 s)\ndata:     ${data}`;
   out.innerHTML = 'Calldata built. Send it from the <b>owner</b> wallet to your ArbExecutor (value 0). Dry-run first; re-build if the deadline passes.';
   ex.data = data; return data;
 }

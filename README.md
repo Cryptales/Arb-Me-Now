@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.6
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v4.9.2
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -70,6 +70,13 @@ All addresses and fees were verified on-chain against live contract data. See th
 ---
 
 ## Changelog
+
+### v4.9.2 (2026-11-04)
+- **First mainnet deploy recorded**: ArbExecutor `0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd` (owner verified on-chain, 1,297,519 gas).
+- First live `execute()` from the ZKX wallet reached the contract and passed the owner check, but it reverted `Expired()` because it was mined ~16.6 min after its 120 s deadline (cost 9.73 PLS).
+- **Calldata deadline raised from 120 s to 600 s** (`now + 600 s`).
+- First mainnet dry run measured 627,914 gas vs the 570k model estimate.
+- White paper §3.13 added; PDF regenerated.
 
 ### v4.9.1 (2026-11-03)
 - **Gas model recalibrated** from fork measurements of `ArbExecutor.execute`: V2+V2 383k, V3+V2 428k, V2+V3 573k, V2×3 346k (warm, call only); 3-leg V3 route 770,688 (full tx). Each route is now estimated as 150k + 140k per V2 hop + 230k per V3 hop, replacing the flat 250k/350k that was ~2.2× too low for V3 routes. Each row shows its gas estimate.
