@@ -175,15 +175,45 @@ async function main() {
   const fmtTok = (raw, d, sym) => (Number(raw) / 10 ** d).toFixed(4) + ' ' + sym;
 
   // ─── CSV telemetry (keeper_log.csv — separate from scanner's scan_log.csv) ───
+  // v5.1.1: every row carries the scanner-style best-route metrics (so keeper_log.csv and
+  // scan_log.csv can be compared directly), then the keeper's own decision columns.
   const CSV_PATH = path.isAbsolute(keeperCsvRel) ? keeperCsvRel : path.join(__dirname, keeperCsvRel);
-  const CSV_HEADER = ['timestamp', 'block', 'route', 'venues', 'sim_decision', 'sim_net_usd', 'action', 'tx_hash', 'realized_usd', 'error'].join(',');
+  const CSV_HEADER = [
+    'timestamp', 'block', 'gas_price_gwei', 'routes_evaluated',
+    'best_route', 'best_type', 'best_pools', 'mid_gap_pct',
+    'opt_size_tok', 'opt_gross_usd', 'opt_bps', 'gas_units', 'gas_usd', 'opt_net_usd',
+    'sim_decision', 'sim_net_usd', 'action', 'tx_hash', 'realized_usd', 'error',
+  ].join(',');
   function csvCell(v) { if (v == null) return ''; const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+  function csvNum(v, dp) { return (v == null || !isFinite(v)) ? '' : Number(v).toFixed(dp); }
   function csvAppend(fields) {
     try {
       if (!fs.existsSync(CSV_PATH) || fs.statSync(CSV_PATH).size === 0) fs.writeFileSync(CSV_PATH, CSV_HEADER + '\n');
       fs.appendFileSync(CSV_PATH, fields.map(csvCell).join(',') + '\n');
     } catch (e) { console.warn('[CSV] write failed:', e.message); }
   }
+  // The best-route metric prefix (14 cells, timestamp..opt_net_usd) for the current block.
+  // `curScan` is set at the top of each runCycle once the scan succeeds, so every log row
+  // — no-candidate, below-floor, revert, guard, sim, sent, error — reports the same single
+  // best executable route the keeper saw that block, exactly as scanner.js logs it.
+  let curScan = null;
+  function prefix(scanOrBlock) {
+    // Accept either a scan result (normal path) or a bare block number (pre-scan errors).
+    const scan = (scanOrBlock && typeof scanOrBlock === 'object') ? scanOrBlock : null;
+    const b = scan ? (scan.block != null ? scan.block : '') : (scanOrBlock != null ? scanOrBlock : '');
+    const gasGwei = scan && scan.gasPrice != null ? Number(scan.gasPrice) / 1e9 : null;
+    const re = scan && scan.routesEvaluated != null ? scan.routesEvaluated : '';
+    const bm = scan && scan.best;
+    if (bm) {
+      return [nowIso(), b, csvNum(gasGwei, 3), re,
+        bm.route, bm.type, bm.pools, csvNum(bm.midGapPct, 4),
+        csvNum(bm.optSize, 4), csvNum(bm.optProfUsd, 4), csvNum(bm.bps, 2),
+        bm.gasUnits, csvNum(bm.gasUsd, 4), csvNum(bm.optNetUsd, 4)];
+    }
+    return [nowIso(), b, csvNum(gasGwei, 3), re, '', '', '', '', '', '', '', '', '', ''];
+  }
+  // keeperFields = [sim_decision, sim_net_usd, action, tx_hash, realized_usd, error]
+  function logRow(keeperFields) { csvAppend([...prefix(curScan), ...keeperFields]); }
 
   // ─── Telegram (execution notices only) ──────────────────────────────────────
   async function notify(text) {
@@ -260,7 +290,49 @@ async function main() {
       cand.push({ r, optProfUsd, gasUnits, gasUsd, netUsd, usdS });
     }
     cand.sort((a, b) => b.netUsd - a.netUsd);
-    return { block, candidates: cand, usdS, gasPrice, wpls };
+
+    // Best route for telemetry — identical selection to scanner.js: the biggest real price
+    // gap (midEdge) among genuinely executable routes, logged EVERY block even when net-negative.
+    // Non-suspicious 2-hop routes already cleared the ≥$25 leg-liquidity floor; triangular
+    // routes must have an optimal size ≥$25 to exclude illiquid mirages.
+    let bestRow = null;
+    for (const r of allRows) {
+      if (!r.opt) continue;
+      const isTri = r.kind === 'tri';
+      let suspicious = false;
+      if (!isTri) {
+        const capA = legCapUsd(r.legA), capB = legCapUsd(r.legB);
+        const dust = (capA != null && capA < DUST_USD) || (capB != null && capB < DUST_USD);
+        suspicious = dust || Math.abs(r.midEdge) > SUS_GAP;
+      } else {
+        const optSizeUsd = usdS != null ? toFloat(r.opt.amountIn, dec) * usdS : null;
+        if (!(optSizeUsd != null && optSizeUsd >= DUST_USD)) suspicious = true;
+      }
+      if (suspicious) continue;
+      if (!bestRow || r.midEdge > bestRow.r.midEdge) bestRow = { r, isTri };
+    }
+    let best = null;
+    if (bestRow) {
+      const r = bestRow.r;
+      const optProfUsd = usdS != null ? toFloat(r.opt.profit, dec) * usdS : null;
+      const bps = r.opt.amountIn > 0n ? Number(r.opt.profit * 1000000n / r.opt.amountIn) / 100 : null;
+      const gasUnits = routeGas(legsOf(r));
+      const gasUsd = gasUsdFn(gasUnits);
+      best = {
+        route: routeStr(r),
+        type: bestRow.isTri ? 'tri' : '2hop',
+        pools: venuesStr(r),
+        midGapPct: r.midEdge * 100,
+        optSize: r.opt.amountIn != null ? toFloat(r.opt.amountIn, dec) : null,
+        optProfUsd,
+        bps,
+        gasUnits,
+        gasUsd,
+        optNetUsd: (optProfUsd != null && gasUsd != null) ? optProfUsd - gasUsd : null,
+      };
+    }
+
+    return { block, candidates: cand, usdS, gasPrice, wpls, best, routesEvaluated: allRows.length };
   }
 
   // ─── callStatic simulation of the exact execute() call ──────────────────────
@@ -302,13 +374,17 @@ async function main() {
     try { scan = await scanCandidates(); }
     catch (e) {
       console.error(`[${nowIso()}] blk ${block}: scan error: ${e.message}`);
-      csvAppend([nowIso(), block, '', '', 'scan_error', '', 'skip', '', '', e.message]);
+      curScan = null;
+      csvAppend([...prefix(block), 'scan_error', '', 'skip', '', '', e.message]);
       return;
     }
+    curScan = scan;   // best-route metrics for every row logged this cycle
     const b = scan.block || block;
     if (!scan.candidates.length) {
-      console.log(`[${nowIso()}] blk ${b}: no net-positive route >= ${fmtUsd(minProfitUsd)}`);
-      csvAppend([nowIso(), b, '', '', 'none', '', 'skip', '', '', '']);
+      const bm = scan.best;
+      console.log(`[${nowIso()}] blk ${b}: no net-positive route >= ${fmtUsd(minProfitUsd)}`
+        + (bm ? ` (best: ${bm.route} gap ${bm.midGapPct.toFixed(3)}% net ${fmtUsd(bm.optNetUsd)})` : ''));
+      logRow(['none', '', 'skip', '', '', '']);
       return;
     }
 
@@ -321,7 +397,7 @@ async function main() {
       try { sim = await simulate(c, built); }
       catch (e) {
         console.error(`[${nowIso()}] blk ${b}: ${routeStr(r)} sim RPC error: ${e.message}`);
-        csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'sim_error', '', 'skip', '', '', e.message]);
+        logRow(['sim_error', '', 'skip', '', '', e.message]);
         continue;
       }
 
@@ -330,7 +406,7 @@ async function main() {
           ? `NoProfit(returned=${sim.returned}, required=${sim.required})`
           : (sim.name || 'Revert') + (sim.detail ? ':' + sim.detail : '');
         console.log(`[${nowIso()}] blk ${b}: ${routeStr(r)} would REVERT → ${reason} (edge gone — correctly not sending)`);
-        csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'revert:' + (sim.name || 'Revert'), '', 'skip', '', '', reason]);
+        logRow(['revert:' + (sim.name || 'Revert'), '', 'skip', '', '', reason]);
         continue;
       }
 
@@ -344,7 +420,7 @@ async function main() {
 
       if (!meetsFloor) {
         console.log(`           → sim net below floor ${fmtUsd(minProfitUsd)}; skip`);
-        csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd != null ? simNetUsd.toFixed(4) : '', 'skip', '', '', 'below_floor']);
+        logRow(['ok', simNetUsd != null ? simNetUsd.toFixed(4) : '', 'skip', '', '', 'below_floor']);
         continue;
       }
 
@@ -352,13 +428,13 @@ async function main() {
       const guardMsg = checkGuards(scan.gasPrice);
       if (guardMsg) {
         console.log(`           → guard blocked send: ${guardMsg}`);
-        csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd.toFixed(4), 'skip', '', '', 'guard:' + guardMsg]);
+        logRow(['ok', simNetUsd.toFixed(4), 'skip', '', '', 'guard:' + guardMsg]);
         continue;
       }
 
       if (!LIVE) {
         console.log(`           → SIMULATE-ONLY mode: would send (use --live + key to execute).`);
-        csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd.toFixed(4), 'sim', '', '', '']);
+        logRow(['ok', simNetUsd.toFixed(4), 'sim', '', '', '']);
         acted = true;
         break;        // in simulate-only, one confirmed opportunity per cycle is enough to log
       }
@@ -371,7 +447,7 @@ async function main() {
         acted = true;
       } catch (e) {
         console.error(`           → send failed: ${e.message}`);
-        csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd.toFixed(4), 'sent', '', '', 'send_error:' + e.message]);
+        logRow(['ok', simNetUsd.toFixed(4), 'sent', '', '', 'send_error:' + e.message]);
         await notify(`⚠️ <b>Keeper send failed</b>\n${routeStr(r)}\n${e.message}`);
       } finally {
         busy = false;
@@ -412,7 +488,7 @@ async function main() {
     const txHash = await rpcOk('eth_sendRawTransaction', [rawTx]);
     console.log(`           → SENT ${txHash} (nonce ${nonce}, gas ${gasLimit})`);
     daily.trades++;
-    csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd.toFixed(4), 'sent', txHash, '', '']);
+    logRow(['ok', simNetUsd.toFixed(4), 'sent', txHash, '', '']);
     await notify(`🚀 <b>Keeper SENT</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)}\n<code>${txHash}</code>`);
 
     // Await receipt
@@ -426,14 +502,14 @@ async function main() {
     const realized = ok ? decodeRealizedUsd(receipt, c.usdS, dec, sk.keccak) : null;
     if (ok) {
       console.log(`           → SUCCESS ${txHash} realized ${fmtUsd(realized)}`);
-      csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd.toFixed(4), 'sent', txHash, realized != null ? realized.toFixed(4) : '', '']);
+      logRow(['ok', simNetUsd.toFixed(4), 'sent', txHash, realized != null ? realized.toFixed(4) : '', '']);
       await notify(`✅ <b>Keeper SUCCESS</b>\n${routeStr(r)}\nrealized ${fmtUsd(realized)}\n<code>${txHash}</code>`);
     } else {
       // reverted on-chain (edge closed by inclusion): lost only gas
       const gasUsd = c.gasUsd != null ? c.gasUsd : 0;
       daily.lossUsd += gasUsd;
       console.log(`           → REVERTED on-chain ${txHash} (edge closed; lost ~${fmtUsd(gasUsd)} gas)`);
-      csvAppend([nowIso(), b, routeStr(r), venuesStr(r), 'ok', simNetUsd.toFixed(4), 'sent', txHash, (-gasUsd).toFixed(4), 'reverted_onchain']);
+      logRow(['ok', simNetUsd.toFixed(4), 'sent', txHash, (-gasUsd).toFixed(4), 'reverted_onchain']);
       await notify(`❌ <b>Keeper tx reverted</b> (edge closed; only gas lost ~${fmtUsd(gasUsd)})\n<code>${txHash}</code>`);
     }
   }

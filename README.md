@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.1
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.1.1
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -76,6 +76,8 @@ node server/keeper.js --live          # armed (requires a key + keeper_enabled);
 
 Signing deps (`@noble/curves` + `@noble/hashes`) are only needed for `--live` (`cd server && npm install`); simulate-only needs nothing. Full setup, the go-live checklist and the keeper CSV columns are in [server/README.md](server/README.md) · White Paper §3.15.
 
+Since **v5.1.1** the keeper's `keeper_log.csv` records the single best route it saw on **every** block (not just when one clears the floor), mirroring the scanner's `scan_log.csv` metric columns from the identical `engine.js` fields — so a dry run can be reviewed apples-to-apples against the scanner. See the Changelog for the 20-column schema.
+
 ## Reading the results table
 
 | Column | What it means |
@@ -113,6 +115,11 @@ The full explanation with a worked example is in the white paper, §5.1.
 ---
 
 ## Changelog
+
+### v5.1.1 (2026-11-14)
+- **Enriched keeper telemetry — best route per block with scanner-parity metrics.** The dry keeper's `keeper_log.csv` now logs the single best route it saw on **every** block (not just a bare `none,skip` row when nothing clears the floor), mirroring the scanner's `scan_log.csv` metric columns from the identical `engine.js` fields: best route/type/pools, mid-gap %, optimal size/gross/bps, gas units/USD and optimal net USD. Every code path — no-candidate, below-floor, revert, guard-blocked, simulate/would-send, sent, errors — carries the populated best-route columns alongside the keeper's own `sim_decision` / `action` / `tx_hash` / `realized_usd` decision columns, so a dry run reviews apples-to-apples against the scanner.
+- New 20-column schema (`timestamp,block,gas_price_gwei,routes_evaluated,best_route,best_type,best_pools,mid_gap_pct,opt_size_tok,opt_gross_usd,opt_bps,gas_units,gas_usd,opt_net_usd,sim_decision,sim_net_usd,action,tx_hash,realized_usd,error`). On upgrade the old `keeper_log.csv` is rotated aside so the new run starts a clean single-schema file.
+- Keeper behaviour otherwise **identical**: simulate-only default, `--live` gating, kill switches, single-flight, RPC fallback, Telegram-on-execution. Tested read-only — `--dry --once` writes the new header and a fully populated best-route row on a no-opportunity block; the live dry keeper restarted onto the new code still banners SIMULATE-ONLY and writes enriched rows every block.
 
 ### v5.1 (2026-11-14)
 - **New `server/keeper.js` — per-block, simulate-first automatic execution.** A separate program (not the scanner) that reuses `engine.js`, polls the chain tip, and on each new block scans, selects the best routes, ABI-encodes the exact `execute()` call and `callStatic`-simulates it against the live ArbExecutor at `0xd5da…30bd` before acting. It sends only on a simulation that returns a profit, with the on-chain `minProfit` set to **90%** of the simulated edge (`onchain_guard_frac`) so a tx that lands after the one-block gap closes reverts (losing only gas) instead of trading at a loss.
