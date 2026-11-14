@@ -79,7 +79,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
-const KEEPER_VERSION = 'v5.1.2';
+const KEEPER_VERSION = 'v5.1.3';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -188,6 +188,7 @@ async function main() {
     'opt_size_tok', 'opt_gross_usd', 'opt_bps', 'gas_units', 'gas_usd', 'opt_net_usd',
     'sim_decision', 'sim_net_usd', 'action', 'tx_hash', 'realized_usd', 'error',
     'shadow_cs_net_usd', 'shadow_cs_prof_tok', 'shadow_ratio',
+    'sweep_1_5x_net_usd', 'sweep_2x_net_usd', 'sweep_4x_net_usd', 'sweep_best_mult', 'sweep_best_net_usd',
   ].join(',');
   function csvCell(v) { if (v == null) return ''; const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
   function csvNum(v, dp) { return (v == null || !isFinite(v)) ? '' : Number(v).toFixed(dp); }
@@ -219,14 +220,23 @@ async function main() {
     return [nowIso(), b, csvNum(gasGwei, 3), re, '', '', '', '', '', '', '', '', '', ''];
   }
   // keeperFields = [sim_decision, sim_net_usd, action, tx_hash, realized_usd, error]
-  // v5.1.2: every row also carries the 3 shadow cells so the 23-column schema stays aligned.
+  // v5.1.2: every row carries 3 shadow cells; v5.1.3 adds 5 size-sweep cells so the
+  // 28-column schema stays aligned on every code path.
   function logRow(keeperFields) {
     const sh = curShadow
       ? [ csvNum(curShadow.net, 4),
           csvNum(curShadow.profTok, 4),
           (curShadow.ratio != null ? csvNum(curShadow.ratio, 3) : (curShadow.revert || '')) ]
       : ['', '', ''];
-    csvAppend([...prefix(curScan), ...keeperFields, ...sh]);
+    // v5.1.3: 5 size-sweep cells (1.5x/2x/4x read-only net, best multiplier, best net).
+    const sw = (curShadow && curShadow.sweep)
+      ? [ csvNum(curShadow.sweep.n15, 4),
+          csvNum(curShadow.sweep.n2,  4),
+          csvNum(curShadow.sweep.n4,  4),
+          (curShadow.sweep.bestMult || ''),
+          csvNum(curShadow.sweep.bestNet, 4) ]
+      : ['', '', '', '', ''];
+    csvAppend([...prefix(curScan), ...keeperFields, ...sh, ...sw]);
   }
 
   // ─── Telegram (execution notices only) ──────────────────────────────────────
@@ -390,7 +400,7 @@ async function main() {
       console.error(`[${nowIso()}] blk ${block}: scan error: ${e.message}`);
       curScan = null;
       curShadow = null;
-      csvAppend([...prefix(block), 'scan_error', '', 'skip', '', '', e.message, '', '', '']);
+      csvAppend([...prefix(block), 'scan_error', '', 'skip', '', '', e.message, '', '', '', '', '', '', '', '']);
       return;
     }
     curScan = scan;   // best-route metrics for every row logged this cycle
@@ -410,12 +420,51 @@ async function main() {
           const shProfUsd = scan.usdS != null ? toFloat(sim.profit, dec) * scan.usdS : null;
           const shNet = (shProfUsd != null && scan.best.gasUsd != null) ? shProfUsd - scan.best.gasUsd : null;
           const ratio = (shProfUsd != null && scan.best.optProfUsd) ? shProfUsd / scan.best.optProfUsd : null;
-          curShadow = { net: shNet, profTok: toFloat(sim.profit, dec), ratio, revert: null };
+          curShadow = { net: shNet, profTok: toFloat(sim.profit, dec), ratio, revert: null, sweep: null };
         } else {
-          curShadow = { net: null, profTok: null, ratio: null, revert: (sim.name || 'Revert') };
+          curShadow = { net: null, profTok: null, ratio: null, revert: (sim.name || 'Revert'), sweep: null };
         }
       } catch (e) {
-        curShadow = { net: null, profTok: null, ratio: null, revert: 'err:' + String(e.message).slice(0, 40) };
+        curShadow = { net: null, profTok: null, ratio: null, revert: 'err:' + String(e.message).slice(0, 40), sweep: null };
+      }
+
+      // ── Size-sweep shadow (v5.1.3) ──────────────────────────────────────────
+      // Read-only: on the SAME fire, run callStatics on the best route at 1.5x/2x/4x the
+      // engine's optimal amountIn with minProfit=1 (so the on-chain guard never masks the
+      // measurement) to reveal whether a LARGER trade nets more than the engine's chosen
+      // size. Pure eth_call from the owner — can NEVER send. Each sweep leg is isolated in
+      // its own try/catch so a failure never breaks the cycle or the main trade path.
+      try {
+        const r = scan.bestR;
+        const sweepOne = async (mult) => {
+          try {
+            const scaledAmountIn = (r.opt.amountIn * BigInt(Math.round(mult * 1000))) / 1000n;
+            const packed = legsOf(r).map(E.packLeg);
+            const deadline = BigInt(Math.floor(Date.now() / 1000) + Math.round(txDeadlineS));
+            const calldata = E.encodeExecute(packed, scaledAmountIn, 1n, deadline);
+            const sim = await E.simulateExecute(executor, calldata);
+            if (sim.ok) {
+              const profUsd = scan.usdS != null ? toFloat(sim.profit, dec) * scan.usdS : null;
+              return (profUsd != null && scan.best.gasUsd != null) ? profUsd - scan.best.gasUsd : null;
+            }
+            return null; // revert => empty cell
+          } catch (e) { return null; }
+        };
+        const n15 = await sweepOne(1.5);
+        const n2  = await sweepOne(2);
+        const n4  = await sweepOne(4);
+        // Best across {1x engine shadow net, 1.5x, 2x, 4x}.
+        const cands = [
+          { mult: '1x',   net: (curShadow ? curShadow.net : null) },
+          { mult: '1.5x', net: n15 },
+          { mult: '2x',   net: n2 },
+          { mult: '4x',   net: n4 },
+        ].filter(c => c.net != null && isFinite(c.net));
+        let bestMult = null, bestNet = null;
+        for (const c of cands) { if (bestNet == null || c.net > bestNet) { bestNet = c.net; bestMult = c.mult; } }
+        if (curShadow) curShadow.sweep = { n15, n2, n4, bestMult, bestNet };
+      } catch (e) {
+        if (curShadow) curShadow.sweep = { n15: null, n2: null, n4: null, bestMult: null, bestNet: null };
       }
     }
 
