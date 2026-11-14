@@ -1,3 +1,9 @@
 config.json
 scan_log.csv
 *.csv
+# keeper signing key — NEVER commit a private key
+keeper.key
+*.key
+*.pem
+# optional live-mode signing deps (installed via `npm install` in server/)
+node_modules/

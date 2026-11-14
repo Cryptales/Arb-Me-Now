@@ -37,5 +37,46 @@
   "_csv_path_help": "CSV file to write. Relative paths are resolved inside the server/ folder; absolute paths are used as-is. The file is gitignored by default.",
 
   "rpc_urls": ["https://rpc.pulsechain.com"],
-  "_rpc_help": "PulseChain RPC endpoint(s). The first one is used. Add a backup as a second element if you have one."
+  "_rpc_help": "PulseChain RPC endpoint(s). The scanner uses the first; the keeper tries all of them in order with timeout + retry/backoff. Add one or two backups for resilience.",
+
+  "_keeper_section": "─── v5.1 keeper (automatic execution) — read server/README.md before --live ───",
+
+  "keeper_enabled": true,
+  "_keeper_enabled_help": "Hard global on/off for sending. false = the keeper still detects/simulates but every send is blocked by the guard. Default true (sends still also require the --live flag AND a key).",
+
+  "executor_address": "0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd",
+  "_executor_help": "The deployed ArbExecutor contract the keeper calls execute() on. This is a public contract address, not your wallet.",
+
+  "poll_interval_ms": 3000,
+  "_poll_help": "How often (ms) the keeper polls the chain tip. It only scans when the block advances, so it reacts within one block. 3000 is well under PulseChain's block time; 1000-5000 is reasonable.",
+
+  "min_profit_usd": 0.50,
+  "_min_profit_usd_help": "Minimum simulated net-after-gas USD required to act on a route. Falls back to min_net_usd if unset. Default 0.50.",
+
+  "max_gas_price_gwei": null,
+  "_max_gas_price_help": "Abort a send if the live gas price (gwei) exceeds this cap. null = no cap. PulseChain gwei is large nominally but costs ~\\$0.0015/tx; set a sanity ceiling if you like.",
+
+  "onchain_guard_frac": 0.9,
+  "_onchain_guard_help": "On-chain minProfit is set to this fraction of the simulated edge. 0.9 = the tx reverts (losing only gas) unless >=90% of the expected profit still exists at inclusion. This is the core safety guard against the one-block edge closing.",
+
+  "tx_deadline_s": 30,
+  "_tx_deadline_help": "Seconds added to now for the execute() deadline param. The tx reverts if not mined within this window.",
+
+  "gas_limit_buffer_pct": 25,
+  "_gas_limit_buffer_help": "Percent added to eth_estimateGas for the send gas limit, to avoid out-of-gas on slight state drift.",
+
+  "max_trades_per_day": 25,
+  "_max_trades_help": "Kill switch: stop sending after this many trades in a UTC day. Counter resets at UTC midnight.",
+
+  "max_daily_loss_usd": 5,
+  "_max_daily_loss_help": "Kill switch: stop sending once cumulative realized loss (reverted-tx gas) in a UTC day reaches this USD. Resets at UTC midnight.",
+
+  "max_sim_per_cycle": 3,
+  "_max_sim_help": "Max routes to simulate per block (best-first). The keeper acts on the first that passes; the rest are logged.",
+
+  "keeper_csv_path": "keeper_log.csv",
+  "_keeper_csv_help": "Keeper's own CSV log (separate from the scanner's scan_log.csv). Relative paths resolve inside server/. Gitignored by default.",
+
+  "keeper_key_file": "keeper.key",
+  "_keeper_key_help": "OPTIONAL fallback key source for --live if KEEPER_PRIVATE_KEY is not set: a file containing only the 0x-prefixed private key. This file is gitignored — NEVER commit it. Prefer the env var. Use a DEDICATED low-balance keeper wallet."
 }

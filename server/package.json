@@ -1,0 +1,19 @@
+{
+  "name": "arb-me-now-keeper",
+  "version": "5.1.0",
+  "private": true,
+  "description": "OPTIONAL signing dependencies for the Arb-Me-Now v5.1 keeper LIVE mode. The scanner and the default simulate-only keeper use only engine.js + Node built-ins and need NONE of these. Run `npm install` here only before running `node keeper.js --live`.",
+  "scripts": {
+    "scanner": "node scanner.js",
+    "keeper": "node keeper.js",
+    "keeper:dry": "node keeper.js --dry --once",
+    "keeper:selftest": "node keeper.js --selftest"
+  },
+  "dependencies": {
+    "@noble/curves": "1.6.0",
+    "@noble/hashes": "1.5.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

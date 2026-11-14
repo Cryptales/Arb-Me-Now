@@ -1,4 +1,4 @@
-# Arb-Me-Now v5.0.1 — Server Scanner
+# Arb-Me-Now v5.1 — Server Scanner + Keeper
 
 Runs the same scanner engine as the browser UI 24/7 on your own machine and sends a Telegram message whenever a route is profitable after gas. You still decide when and whether to trade.
 
@@ -107,3 +107,94 @@ Load it in any spreadsheet or with pandas. The file is gitignored by default —
 - `config.json` is in `.gitignore`. Never commit it.
 - The bot token only allows sending messages to `telegram_chat_id`. It has no access to your wallet.
 - The scanner only reads from the RPC and the Telegram API. It never signs transactions.
+
+---
+
+# Keeper — automatic execution (`keeper.js`, new in v5.1)
+
+`keeper.js` is a **separate** program from the scanner. Where the scanner alerts you and leaves the trade to you, the keeper is the next step on the roadmap: it watches the chain **per block**, and when a route clears your profit floor it simulates the exact `execute()` call against the live ArbExecutor contract and — only if you have explicitly armed it — sends the transaction.
+
+The whole design follows from one data finding (26,257 scans over ~9.4 days): profitable windows are rare (~0.23% of scans) and almost always last **exactly one block**. A 30 s scanner sees them after they have already closed. So the keeper reacts within a block and leans on an **on-chain profit guard** so a transaction that lands after the gap closes simply reverts (costing only gas) instead of trading at a loss.
+
+### Safety model — read this before `--live`
+
+The keeper is built so that the **default, zero-argument behaviour cannot send a transaction**, and so that going live takes three independent, deliberate switches:
+
+1. **`--live` flag** — without it the keeper is in *simulate-only* mode: it detects, scans, ABI-encodes and `callStatic`-simulates every opportunity and logs it, but never signs or sends. This is the default and is completely read-only.
+2. **A private key** — supplied via the `KEEPER_PRIVATE_KEY` environment variable (preferred) or a gitignored key file (`keeper_key_file`, default `keeper.key`). With no key, `--live` falls back to simulate-only and tells you so.
+3. **`keeper_enabled: true`** in `config.json` — a hard global kill switch. Set it to `false` and every send is blocked at the guard even in `--live`.
+
+`--dry` always wins: `--dry --live` stays simulate-only. There is no code path that sends without all three of the above.
+
+**Kill switches** (all in `config.json`, all enforced before every send):
+
+| Setting | What it does |
+|---|---|
+| `min_profit_usd` | Minimum simulated net-after-gas USD to act on a route (default $0.50). |
+| `onchain_guard_frac` | On-chain `minProfit` is set to this fraction of the simulated edge (default 0.9). The tx reverts unless ≥90% of the expected profit still exists at inclusion — the core guard against the one-block edge closing. |
+| `max_gas_price_gwei` | Abort a send if live gas price exceeds this cap (`null` = no cap). |
+| `tx_deadline_s` | Seconds added to `now` for the `execute()` deadline; the tx reverts if not mined in time (default 30). |
+| `max_trades_per_day` | Stop sending after this many trades in a UTC day (default 25). |
+| `max_daily_loss_usd` | Stop sending once cumulative realized loss (reverted-tx gas) reaches this in a UTC day (default 5). |
+| `keeper_enabled` | Global on/off for all sends. |
+
+Single-flight: only one transaction is ever in flight at a time. Counters reset at UTC midnight.
+
+### How to go live safely
+
+1. **Use a dedicated, low-balance keeper wallet** — never your main wallet. Fund it with only enough PLS for gas (each arb tx costs ~$0.0015). The owner's profit is paid to the owner by the contract regardless of which wallet sends.
+2. **Authorize that wallet as the keeper on-chain.** The ArbExecutor restricts `execute()` to the owner or an appointed keeper. As the owner, call `setKeeper(<keeper_wallet_address>)` (via the app's Trade Companion → Deploy kit, or any wallet). You can revoke it any time with `setKeeper(0x0)`. **The keeper program never needs the owner key.**
+3. **Install signing dependencies** (only needed for live sending — simulate-only needs nothing):
+   ```bash
+   cd server && npm install
+   ```
+   This pulls `@noble/curves` + `@noble/hashes` (pure-JS secp256k1). They are lazy-loaded; simulate-only mode never imports them.
+4. **Provide the key via environment variable** (preferred — nothing touches disk):
+   ```bash
+   export KEEPER_PRIVATE_KEY=0x<your_dedicated_keeper_wallet_key>
+   ```
+   Or, alternatively, put the `0x`-prefixed key alone in `server/keeper.key` (gitignored — **never commit it**).
+5. **Arm it:**
+   ```bash
+   node keeper.js --live
+   ```
+
+### Testing (no key, read-only)
+
+All of these are safe — they never send:
+
+```bash
+node keeper.js --selftest        # offline crypto self-test: RLP vectors, keccak, sign -> ecrecover round-trip
+node keeper.js --simtest         # live: discover pools, scan, ABI-encode + callStatic-simulate against the live contract
+node keeper.js --dry --once      # live: one poll cycle against your real config, logs, sends nothing
+node keeper.js --dry             # live: continuous per-block poll, simulate-only
+```
+
+### Keeper log (CSV)
+
+The keeper writes its **own** CSV (`keeper_csv_path`, default `server/keeper_log.csv`) — completely separate from the scanner's `scan_log.csv`. One row per decision:
+
+| Column | Meaning |
+|---|---|
+| `timestamp`, `block` | When the decision was made and the block it simulated at |
+| `route`, `venues` | The route (e.g. `WPLS>pDAI>WPLS`) and the pools/venues it runs through |
+| `sim_decision` | `ok`, `skip`, or the decoded revert name (e.g. `NoProfit`, `Expired`) |
+| `sim_net_usd` | Simulated net-after-gas profit in USD |
+| `action` | `skip`, `sim` (simulate-only), or `sent` |
+| `tx_hash` | Transaction hash if sent (blank otherwise) |
+| `realized_usd` | Realized profit/loss once the tx is mined |
+| `error` | Any RPC/encode/send error surfaced for that cycle |
+
+### Telegram
+
+The keeper reuses the same `telegram_bot_token` / `telegram_chat_id` config, but notifies **only on actual executions** — a success (with tx hash + profit) or a failed send (with the decoded reason). It does not spam you on every simulate.
+
+### Config
+
+All keeper options live in `config.example.json` under the `_keeper_section` marker, each with an inline `_help` note. Copy them into your `config.json` and adjust. The key fields are `keeper_enabled`, `executor_address` (the public ArbExecutor contract — not your wallet), `poll_interval_ms`, `min_profit_usd`, `onchain_guard_frac`, and the kill switches above.
+
+### Security notes (keeper)
+
+- The private key is read **only** from `KEEPER_PRIVATE_KEY` or the gitignored `keeper.key`, **only** in `--live`, and is never logged, echoed, or committed. `.gitignore` covers `keeper.key`, `*.key`, `*.pem`, and `config.json`.
+- Simulate-only mode (the default) imports no signing library and holds no key — it is strictly read-only, exactly like the scanner.
+- Use a dedicated keeper wallet with a small balance so that even in a worst case the exposure is bounded to its gas balance.

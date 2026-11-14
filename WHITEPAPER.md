@@ -1,4 +1,4 @@
-# Arb-Me-Now — Process Manual & White Paper (v5.0.2)
+# Arb-Me-Now — Process Manual & White Paper (v5.1)
 
 *PulseChain on-chain arbitrage scanner · analysis tool, not an execution bot · November 2026*
 
@@ -167,6 +167,44 @@ Gas uses the v4.9.3 calibration: 210k base + 140k per V2 hop + 230k per V3 hop, 
 
 **Tested so far (2026-11-04):** one live dry-run scan at block 27,970,424 evaluated 200 routes for 1,000 WPLS and found 0 net-positive, which matches the browser results that day. A real Telegram delivery has **not** been tested yet, because that needs your own bot token. Do the first live check with a test message after setup.
 
+### 3.15 The keeper: per-block, simulate-first automatic execution (v5.1)
+
+v5.0 alerts you and leaves the trade to you. v5.1 adds **`server/keeper.js`**, a separate Node.js program that can act on an opportunity within the block it appears in. It reuses the same `engine.js` — no route maths is duplicated or rewritten — and talks to the already-deployed ArbExecutor at `0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd`.
+
+**Why per-block, and why simulate-first.** The design is dictated by the data. Across 26,257 scans over roughly 9.4 days, genuinely net-positive windows occurred in only about **0.23%** of scans, and they almost always lasted **exactly one block**. The clearest example was a pDAI dislocation that spiked to a 6.53% mid gap for a single block (net about +$5.52 on ~20.3M WPLS) and was gone by the next 30 s scan. The proven setup was **WPLS → pDAI → WPLS routed PulseX ↔ LibertySwap V3 0.25%**. Two consequences follow. First, a 30 s poll is far too slow — the keeper must watch the chain tip and react as soon as the block advances. Second, because the gap can close between deciding and being included, the keeper must simulate at the *latest* block immediately before sending and must never rely on a stale estimate.
+
+**The pipeline, per block.**
+1. **Detect.** The keeper polls the chain tip every `poll_interval_ms` (default 3000 ms, well under block time) and only does work when the block number advances, so it reacts within one block without hammering the RPC.
+2. **Scan.** On a new block it runs the same `discoverPools` / `fetchPoolStates` / `scanCycles` / `scanTriangular` path the scanner uses, producing the ranked list of executable routes.
+3. **Select.** It takes the best routes (up to `max_sim_per_cycle`, best-first) whose simulated net-after-gas USD clears `min_profit_usd` (default $0.50).
+4. **Simulate before send.** For each candidate it ABI-encodes the *exact* `execute(uint256[] legs, uint256 amountIn, uint256 minProfit, uint256 deadline)` call — the same leg packing the contract expects (pool address in bits 0–159, kind in 160–167, direction in 168–175, V2 fee bps in 176–191) — and runs it as an `eth_call` (`callStatic`) against the live contract at the latest block. If the call reverts, the keeper decodes the custom error (`NoProfit(returned, required)`, `Expired`, `NotAuthorized`, …) and **does not send**. It only proceeds on a simulation that returns a profit.
+5. **Gated send.** Only if armed (see the safety model) does it sign and broadcast, with the on-chain `minProfit` set to `onchain_guard_frac` (default 0.9) of the simulated edge.
+
+**The on-chain minProfit guard** is the keystone of the safety model. The contract reverts `NoProfit` unless the round trip actually returns at least `minProfit`. By setting that to 90% of the edge the simulation just measured, a transaction that lands after the one-block gap has closed **reverts on-chain and costs only gas** (about $0.0015 on PulseChain) instead of executing a losing trade. Price risk between simulate and inclusion is therefore bounded by the guard, not by hope.
+
+**The safety model: simulate-only by default.** The keeper is built so the default cannot send. Going live requires three independent switches, all of which must be set:
+- **`--live` flag.** Without it the keeper runs in *simulate-only* mode — it detects, scans, encodes and `callStatic`-simulates every opportunity and logs it, but never signs or sends. This is the default and is completely read-only, exactly like the scanner. `--dry` forces simulate-only even if `--live` is passed.
+- **A private key**, read **only** from the `KEEPER_PRIVATE_KEY` environment variable (preferred) or a gitignored key file (`keeper_key_file`, default `keeper.key`). With no key, `--live` falls back to simulate-only and says so. The key is never logged, echoed or committed.
+- **`keeper_enabled: true`** in `config.json` — a hard global kill switch that blocks every send even in `--live`.
+
+On top of that, every send is gated by **kill switches**: `max_gas_price_gwei` (abort if gas exceeds a cap), `tx_deadline_s` (the `execute()` deadline, default 30 s, so a late tx reverts `Expired`), `max_trades_per_day` (default 25) and `max_daily_loss_usd` (default $5, counting reverted-tx gas), both reset at UTC midnight. A **single-flight** lock guarantees only one transaction is ever in flight. Signing uses pure-JS secp256k1 (`@noble/curves` + `@noble/hashes`), lazy-loaded only when live — simulate-only mode imports no signing library and holds no key.
+
+**Key handling for going live.** Use a **dedicated, low-balance keeper wallet**, never the owner wallet, funded with only enough PLS for gas. Authorize it on-chain once with the owner's `setKeeper(<keeper_address>)` (revocable any time with `setKeeper(0x0)`); the ArbExecutor already restricts `execute()` to the owner or that appointed keeper, and profit is always paid to the owner regardless of who sends. The keeper program therefore **never needs the owner key**, and worst-case exposure is bounded to the keeper wallet's small gas balance.
+
+**Robust RPC.** Every RPC call has a timeout and retries with backoff, and falls back through all configured `rpc_urls` in order, so a flaky or dead endpoint degrades gracefully rather than crashing the poll loop.
+
+**Logging and notifications.** The keeper writes its own CSV (`keeper_csv_path`, default `server/keeper_log.csv`, separate from the scanner's `scan_log.csv`): one row per decision with timestamp, block, route, venues, simulation decision, simulated net USD, action (`skip`/`sim`/`sent`), tx hash, realized USD and any error. Telegram notifications fire **only on actual executions** — a success with tx hash and profit, or a failed send with the decoded reason — reusing the existing `telegram_bot_token` / `telegram_chat_id` config.
+
+**Tested so far (2026-11-14), read-only, no key:**
+- **Offline crypto self-test** (`--selftest`): RLP encoding against known vectors, keccak256 of the empty string, address derivation, raw-tx hex, and a **sign → ecrecover round-trip that recovers the same address** with EIP-155 `v` for chainId 369. All pass.
+- **Live simulate test** (`--simtest`): at block 28,053,137 it discovered 66 pools (56 live), scanned 100 two-pool and 89 triangular cycles, selected a best route, ABI-encoded `execute()` (selector `0x29df2c6f`, 228-byte calldata) and ran `callStatic` against the live contract — **simulation returned a profit (OK)**.
+- **Live dry run** (`--dry --once`) against the real config at block 28,053,147 correctly reported "no net-positive route ≥ $0.50" and wrote the CSV row — the common no-opportunity path.
+- **RPC fallback**: with a dead primary and a good backup in `rpc_urls`, the keeper still fetched the block via the fallback.
+- **Revert decode**: forcing an impossible `minProfit` decoded `NoProfit(returned=…, required=…)`, and an expired deadline decoded `Expired`, both against the live contract.
+- **Config fail-fast**: a negative `min_profit_usd` was rejected before any work began.
+
+**Not yet verified:** an actual **live send** cannot be tested here because that requires a funded, authorized keeper private key, which by design is never supplied to or requested by this tool. The send path is built and its simulation and signing components are individually tested, but a real on-chain execution is unverified.
+
 ## 4. Operating Procedure (step by step)
 
 1. Open https://cryptales.github.io/Arb-Me-Now/.
@@ -270,10 +308,11 @@ By default the page is read-only: it uses only `eth_call` and HTTPS GET requests
 
 ## 9. Roadmap
 
-~~first mainnet deploy~~ (done, §3.13) · first profitable live trade when a net-positive route appears · v4.10 private/bundled submission (MEV protection) · ~~v5.0 server-side Telegram alerts~~ (done, §3.14) · v5.1 keeper role + automatic execution of alerted routes · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
+~~first mainnet deploy~~ (done, §3.13) · first profitable live trade when a net-positive route appears · ~~v5.0 server-side Telegram alerts~~ (done, §3.14) · ~~v5.1 keeper: per-block, simulate-first automatic execution~~ (done — simulate-only by default, live send unverified without a key, §3.15) · v4.10 private/bundled submission (MEV protection) — still ahead · Balancer-V3 / Tide support if its liquidity grows · more venues and tokens.
 
 ## 10. Version history
 
+- **v5.1:** The keeper — per-block, simulate-first automatic execution (§3.15). New `server/keeper.js`, a separate program that reuses `engine.js`, polls the chain tip and on each new block scans, selects the best routes, ABI-encodes the exact `execute()` call and `callStatic`-simulates it against the live ArbExecutor before acting; it sends only on a simulation that returns a profit, with the on-chain `minProfit` set to 90% of the simulated edge so a late tx reverts (losing only gas) instead of trading at a loss. Safety-first: simulate-only by default — sending requires the `--live` flag **and** a key (from `KEEPER_PRIVATE_KEY` or a gitignored key file) **and** `keeper_enabled`, plus kill switches (max gas price, max trades/day, max daily loss, single-flight) and robust RPC (timeout/retry/fallback). Its own `keeper_log.csv` and Telegram-on-execution-only. Tested read-only: offline sign→ecrecover self-test, live `callStatic` simulate returning a profit, dry-run no-opportunity path, RPC fallback, and `NoProfit`/`Expired` revert decoding against the live contract. **Live send is unverified** — it needs a funded, authorized keeper key, which is never supplied to or requested by the tool. New `server/README.md` keeper guide and `config.example.json` keeper fields; key files gitignored.
 - **v5.0.2:** Alert floor in USD (§3.14). New `min_net_usd` config option (default **$0.50**) gates Telegram alerts on net profit after gas, so hairline-positive routes worth a few cents no longer fire. First live alert (WPLS→WETH→WPLS, net $0.117) prompted this. The CSV scan log is unaffected — it still records the best route every scan regardless of the floor, and the `net_positive` column still counts truly net-positive routes. Tested live.
 - **v5.0.1:** Scan-log CSV (§3.14). The server scanner now appends one row per scan to `server/scan_log.csv` recording the single best *executable* route that scan — the largest mid-gap route that clears the dust floors — even when it is net-negative after gas. 19 columns (timestamp, scan, block, gas price, routes evaluated, route + pools, mid gap, optimal size/gross/net/bps, gas estimate, profit at fixed size). Git-ignored; toggled by `csv_log` / `csv_path` in `config.json` (on by default). Alert logic unchanged — this only writes a near-miss history for later analysis. Tested live: rows append once per scan.
 - **v5.0:** Server scanner + Telegram alerts (§3.14). New `server/` folder: `scanner.js` runs the same engine on an always-on machine and sends a Telegram alert for every route that is net-positive after gas and not suspicious, de-duplicated per route. It only alerts and never trades. `--dry --once` lets you test without Telegram. Live dry-run scan tested (200 routes, 0 net-positive); real Telegram delivery not yet tested.

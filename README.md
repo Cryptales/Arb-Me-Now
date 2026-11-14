@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.0.2
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.1
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -61,6 +61,21 @@ node server/scanner.js                             # run continuously (use scree
 
 **New in v5.0.1 — scan log.** Each scan also appends the single best route it saw that scan — even when net-negative after gas — to `server/scan_log.csv` (git-ignored, on by default via `csv_log` in `config.json`). It's a 19-column near-miss history (route, pools, mid gap, optimal size + gross/net USD + bps, gas, profit at your fixed size) for studying how close the market comes to a profitable cycle over time.
 
+## Keeper — automatic execution (v5.1)
+
+`server/keeper.js` is the next step beyond alerts: a separate program that watches the chain **per block** and, when a route clears your profit floor, simulates the exact `execute()` call against the live ArbExecutor contract before acting. The data drives the design — profitable windows are rare (~0.23% of scans) and almost always last exactly **one block** — so it reacts within a block and sets an **on-chain minProfit guard** (default 90% of the simulated edge) so a transaction that lands after the gap closes simply reverts, losing only gas instead of trading at a loss.
+
+**Safety first — it cannot send by default.** Simulate-only is the default (read-only, like the scanner). Sending requires three deliberate switches together: the `--live` flag, a private key (from the `KEEPER_PRIVATE_KEY` env var or a gitignored key file — never committed), and `keeper_enabled` in config — plus kill switches (max gas price, max trades/day, max daily loss, single-flight) and robust RPC (timeout/retry/fallback). Use a dedicated low-balance keeper wallet authorized on-chain via `setKeeper()`; the keeper never needs the owner key.
+
+```
+node server/keeper.js --selftest      # offline crypto self-test (sign -> ecrecover round-trip)
+node server/keeper.js --simtest       # live: ABI-encode + callStatic-simulate against the live contract
+node server/keeper.js --dry --once    # live: one poll cycle, logs, sends nothing
+node server/keeper.js --live          # armed (requires a key + keeper_enabled); simulate-first every block
+```
+
+Signing deps (`@noble/curves` + `@noble/hashes`) are only needed for `--live` (`cd server && npm install`); simulate-only needs nothing. Full setup, the go-live checklist and the keeper CSV columns are in [server/README.md](server/README.md) · White Paper §3.15.
+
 ## Reading the results table
 
 | Column | What it means |
@@ -91,13 +106,20 @@ The full explanation with a worked example is in the white paper, §5.1.
 | `index.html` | The complete scanner (single self-contained file — CSS, engine, and UI all inlined) |
 | `README.md` | This file |
 | `engine.js` | Scanner engine (also inlined in index.html); used by the server scanner |
-| `server/` | v5.0 server scanner + Telegram alerts (`scanner.js`, `config.example.json`, `README.md`) |
+| `server/` | Server scanner + Telegram alerts (`scanner.js`, v5.0) and the v5.1 keeper (`keeper.js` — per-block simulate-first auto-execution), plus `config.example.json`, `package.json`, `README.md` |
 
 `dashboard.html` and `trade-companion.html` are older files kept for reference only. Use `index.html`.
 
 ---
 
 ## Changelog
+
+### v5.1 (2026-11-14)
+- **New `server/keeper.js` — per-block, simulate-first automatic execution.** A separate program (not the scanner) that reuses `engine.js`, polls the chain tip, and on each new block scans, selects the best routes, ABI-encodes the exact `execute()` call and `callStatic`-simulates it against the live ArbExecutor at `0xd5da…30bd` before acting. It sends only on a simulation that returns a profit, with the on-chain `minProfit` set to **90%** of the simulated edge (`onchain_guard_frac`) so a tx that lands after the one-block gap closes reverts (losing only gas) instead of trading at a loss.
+- **Safety model — simulate-only by default.** Sending requires three independent switches together: the `--live` flag, a key (`KEEPER_PRIVATE_KEY` env var or a gitignored key file), and `keeper_enabled` in config. `--dry` always forces simulate-only. Kill switches: `max_gas_price_gwei`, `tx_deadline_s`, `max_trades_per_day`, `max_daily_loss_usd`, single-flight; counters reset at UTC midnight. Robust RPC (timeout/retry/backoff/fallback). Signing libs (`@noble/curves` + `@noble/hashes`) are lazy-loaded only when live — simulate-only holds no key and imports no crypto. `--selftest` / `--simtest` / `--dry --once` flags for testing.
+- Own `keeper_log.csv` (separate from `scan_log.csv`) and Telegram notifications **only on actual executions**. New keeper fields in `config.example.json`; `keeper.key` / `*.key` / `*.pem` gitignored. Keeper setup + go-live checklist in `server/README.md`; White Paper §3.15, roadmap and history.
+- **Tested read-only (no key):** offline sign→ecrecover self-test (EIP-155 chainId 369); live `callStatic` simulate returning a profit at block 28,053,137; dry-run no-opportunity path; RPC fallback; and `NoProfit`/`Expired` revert decoding against the live contract. **Live send is unverified** — it needs a funded, authorized keeper key, which by design is never supplied to or requested by the tool.
+- White paper §3.15 + roadmap + history updated; PDF regenerated; `index.html` rebuilt (v5.1).
 
 ### v5.0.2 (2026-11-04)
 - **Alert floor in USD.** New `min_net_usd` config option (default **$0.50**) sets the minimum net-after-gas profit a route must clear before a Telegram alert fires, so hairline-positive routes worth only a few cents no longer ping you. Prompted by the first live alert (WPLS→WETH→WPLS, net $0.117).

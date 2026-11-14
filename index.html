@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v5.0.2</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v5.1</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v5.0.2 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v5.1 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -231,6 +231,9 @@
     <div class="docs-section" style="background:var(--bg-secondary,#161b22);border:1px solid var(--border-color,#30363d);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1rem">
       <h4 style="margin:0 0 0.4rem">📘 Full Process Manual &amp; White Paper</h4>
       <p style="margin:0">Detailed methodology, operating procedure, swap maths, verified fees, risks and version history — <a href="Arb-Me-Now_WhitePaper_v4.4.pdf" target="_blank" rel="noopener" style="color:#f97316;font-weight:600">PDF edition ↗</a> · <a href="WHITEPAPER.md" target="_blank" rel="noopener" style="color:var(--accent-cyan,#58a6ff);font-weight:600">Markdown ↗</a></p>
+    </div>
+    <div class="docs-section"><h4>🤖 New in v5.1: the keeper (automatic execution)</h4>
+      <p>v5.1 adds <code>server/keeper.js</code> — a separate program that watches the chain <b>per block</b> and, when a route clears your profit floor, simulates the exact <code>execute()</code> call against the live ArbExecutor contract before acting. The data drives the design: profitable windows are rare (~0.23% of scans) and almost always last <b>exactly one block</b>, so a 30 s scanner sees them only after they close. The keeper reacts within a block and sets an <b>on-chain minProfit guard</b> (default 90% of the simulated edge) so a transaction that lands after the gap closes simply reverts — losing only gas, never trading at a loss. <b>Safety first:</b> the default behaviour is simulate-only and read-only; sending requires three deliberate switches — the <code>--live</code> flag, a private key (from the <code>KEEPER_PRIVATE_KEY</code> env var or a gitignored key file), and <code>keeper_enabled</code> in config — plus kill switches (max gas price, max trades/day, max daily loss). Use a dedicated low-balance keeper wallet authorized on-chain via <code>setKeeper()</code>; the keeper never needs the owner key. Full setup and the go-live checklist are in <code>server/README.md</code> and White Paper §3.15.</p>
     </div>
     <div class="docs-section"><h4>📲 New in v5.0: server scanner + Telegram alerts</h4>
       <p>You no longer need to keep this tab open. The repo's <code>server/scanner.js</code> runs this same engine on an always-on machine (Node 18+, no installs) and messages you on Telegram when a route is profitable after estimated gas. It applies the same suspicious and dust filters and doesn't repeat an alert for the same route within 5 minutes. It only alerts: you still Dry Run and Send here. To set up: create a bot with @BotFather, copy <code>server/config.example.json</code> to <code>config.json</code> and fill it in, test with <code>node server/scanner.js --dry --once</code>, then run <code>node server/scanner.js</code>. Full steps are in <code>server/README.md</code> and White Paper §3.14. <b>New in v5.0.1:</b> each scan also appends the single best route it saw — even when net-negative — to <code>server/scan_log.csv</code>, so you can study near-misses over time. <b>v5.0.2:</b> alerts now only fire above <code>min_net_usd</code> net after gas (default $0.50) so hairline-positive ticks don't spam you; the CSV still logs everything.</p>
