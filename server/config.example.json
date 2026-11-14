@@ -39,7 +39,10 @@
   "rpc_urls": ["https://rpc.pulsechain.com"],
   "_rpc_help": "PulseChain RPC endpoint(s). The scanner uses the first; the keeper tries all of them in order with timeout + retry/backoff. Add one or two backups for resilience.",
 
-  "_keeper_section": "─── v5.1 keeper (automatic execution) — read server/README.md before --live ───",
+  "_keeper_section": "─── v5.2 keeper (guarded live pilot) — read server/README.md before --live ───",
+
+  "live_enabled": false,
+  "_live_enabled_help": "v5.2.0 GUARDED LIVE PILOT master switch. Default false = the keeper is strictly read-only (simulate-only), exactly like the dry keeper. Sending a real transaction requires ALL THREE: this flag true, the --live CLI flag, AND a valid KEEPER_PRIVATE_KEY env var whose derived address equals the executor's on-chain keeper(). Leaving this false means --live stays read-only. Never set true unless you intend to send real txs from a dedicated, setKeeper()-authorized keeper wallet.",
 
   "keeper_enabled": true,
   "_keeper_enabled_help": "Hard global on/off for sending. false = the keeper still detects/simulates but every send is blocked by the guard. Default true (sends still also require the --live flag AND a key).",
@@ -65,11 +68,14 @@
   "gas_limit_buffer_pct": 25,
   "_gas_limit_buffer_help": "Percent added to eth_estimateGas for the send gas limit, to avoid out-of-gas on slight state drift.",
 
+  "max_position_usd": 400,
+  "_max_position_help": "v5.2.0 guardrail: cap per-trade notional in USD. Any fire whose optimal-size notional (start-token size × live USD price) exceeds this is skipped. Bounds how much capital a single live trade can route. Default 400.",
+
   "max_trades_per_day": 25,
   "_max_trades_help": "Kill switch: stop sending after this many trades in a UTC day. Counter resets at UTC midnight.",
 
-  "max_daily_loss_usd": 5,
-  "_max_daily_loss_help": "Kill switch: stop sending once cumulative realized loss (reverted-tx gas) in a UTC day reaches this USD. Resets at UTC midnight.",
+  "max_daily_loss_usd": 5.00,
+  "_max_daily_loss_help": "v5.2.0 kill-switch: halt live sending for the rest of the UTC day once cumulative realized loss reaches this USD. Loss = gas spent on reverted/failed txs PLUS any trade that realized below its gas cost. The keeper keeps scanning/simulating/logging — it just stops sending. Resets at UTC midnight. Default 5.00.",
 
   "max_sim_per_cycle": 3,
   "_max_sim_help": "Max routes to simulate per block (best-first). The keeper acts on the first that passes; the rest are logged.",
@@ -77,8 +83,7 @@
   "keeper_csv_path": "keeper_log.csv",
   "_keeper_csv_help": "Keeper's own CSV log (separate from the scanner's scan_log.csv). Relative paths resolve inside server/. Gitignored by default.",
 
-  "keeper_key_file": "keeper.key",
-  "_keeper_key_help": "OPTIONAL fallback key source for --live if KEEPER_PRIVATE_KEY is not set: a file containing only the 0x-prefixed private key. This file is gitignored — NEVER commit it. Prefer the env var. Use a DEDICATED low-balance keeper wallet.",
+  "_keeper_key_help": "The live keeper private key is supplied ONLY via the KEEPER_PRIVATE_KEY environment variable at launch — there is NO config/file key source (removed in v5.2.0). The key is never read from disk, written, logged, or committed. Use a DEDICATED low-balance keeper wallet, authorized on-chain with setKeeper(<addr>).",
 
   "shadow_enabled": true,
   "_shadow_enabled_help": "v5.1.2 shadow sizing telemetry: run ONE extra read-only callStatic on the best route each block (SIMULATE-ONLY, never sends) to log engine-vs-chain profit side-by-side. Set false to disable.",

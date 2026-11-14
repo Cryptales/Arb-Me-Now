@@ -110,32 +110,38 @@ Load it in any spreadsheet or with pandas. The file is gitignored by default —
 
 ---
 
-# Keeper — automatic execution (`keeper.js`, new in v5.1)
+# Keeper — automatic execution (`keeper.js`, guarded live pilot in v5.2.0)
 
-`keeper.js` is a **separate** program from the scanner. Where the scanner alerts you and leaves the trade to you, the keeper is the next step on the roadmap: it watches the chain **per block**, and when a route clears your profit floor it simulates the exact `execute()` call against the live ArbExecutor contract and — only if you have explicitly armed it — sends the transaction.
+`keeper.js` is a **separate** program from the scanner. Where the scanner alerts you and leaves the trade to you, the keeper watches the chain **per block**, and when a route clears your profit floor it simulates the exact `execute()` call against the live ArbExecutor contract and — only if you have explicitly armed the **guarded live pilot** — sends the transaction.
+
+> **v5.2.0 — guarded live pilot.** The keeper can now send real signed `execute()` transactions, but **only** when three independent switches all line up (see the safety model below). It **defaults OFF** and, with the default config, behaves exactly like the read-only dry keeper. The pilot's purpose is to **measure realized-vs-simulated profit under real mempool competition** (backruns/sandwiches/lost races) — something a dry simulation cannot see — cheaply: PulseChain gas is ~$0.002–0.006 per attempt, so a lost race costs only gas. It is a measurement experiment, not a profit push.
 
 The whole design follows from one data finding (26,257 scans over ~9.4 days): profitable windows are rare (~0.23% of scans) and almost always last **exactly one block**. A 30 s scanner sees them after they have already closed. So the keeper reacts within a block and leans on an **on-chain profit guard** so a transaction that lands after the gap closes simply reverts (costing only gas) instead of trading at a loss.
 
 ### Safety model — read this before `--live`
 
-The keeper is built so that the **default, zero-argument behaviour cannot send a transaction**, and so that going live takes three independent, deliberate switches:
+The keeper is built so that the **default behaviour cannot send a transaction**, and so that arming the guarded live pilot takes **all of the following** — if any one is missing, the keeper stays read-only exactly like the dry keeper:
 
-1. **`--live` flag** — without it the keeper is in *simulate-only* mode: it detects, scans, ABI-encodes and `callStatic`-simulates every opportunity and logs it, but never signs or sends. This is the default and is completely read-only.
-2. **A private key** — supplied via the `KEEPER_PRIVATE_KEY` environment variable (preferred) or a gitignored key file (`keeper_key_file`, default `keeper.key`). With no key, `--live` falls back to simulate-only and tells you so.
-3. **`keeper_enabled: true`** in `config.json` — a hard global kill switch. Set it to `false` and every send is blocked at the guard even in `--live`.
+1. **`live_enabled: true` in `config.json`** — the v5.2.0 master switch. **Defaults to `false`** and is never auto-enabled. While it is `false`, `--live` is ignored and the keeper is strictly simulate-only.
+2. **The `--live` CLI flag** — without it the keeper is in *simulate-only* mode: it detects, scans, ABI-encodes and `callStatic`-simulates every opportunity and logs it, but never signs or sends. `--dry` always wins: `--dry --live` stays simulate-only.
+3. **A valid `KEEPER_PRIVATE_KEY` environment variable** — the dedicated keeper wallet's key, supplied **only** as an env var at launch. There is **no file or config key source** (removed in v5.2.0). If `live_enabled` + `--live` are set but the key is **missing or malformed**, the keeper **hard-exits** with a clear message rather than silently falling back.
+4. **The key's derived address must equal the on-chain `keeper()`** — on live start the keeper derives the signer's public address from the key, reads the executor's `keeper()` view, and **refuses to run** (hard exit) unless they match (fail-fast; the contract would revert anyway). Only the **public** derived address is ever printed.
 
-`--dry` always wins: `--dry --live` stays simulate-only. There is no code path that sends without all three of the above.
+In addition, **`keeper_enabled: true`** remains a hard global send kill switch enforced at the guard.
 
-**Kill switches** (all in `config.json`, all enforced before every send):
+**The private key is never written to disk, never logged or echoed (not even masked-with-length), and never committed.** The signing libraries are lazy-loaded only in `--live`/`--selftest`; the default simulate-only path holds no key and imports nothing.
+
+**Guardrails & kill switches** (all in `config.json`, all enforced before every send):
 
 | Setting | What it does |
 |---|---|
-| `min_profit_usd` | Minimum simulated net-after-gas USD to act on a route (default $0.50). |
+| `min_profit_usd` / `min_net_usd` | Minimum **simulated net-after-gas USD** floor to act on a route (default $0.50). Only routes that clear sim with margin can fire. |
+| `max_position_usd` | **v5.2.0** per-trade notional cap (default $400). Any fire whose optimal-size notional (start-token size × live USD price) exceeds it is skipped. |
+| `max_daily_loss_usd` | **v5.2.0 kill-switch** (default $5.00). Tracks cumulative realized loss for the UTC day — gas spent on reverted/failed txs **plus** any trade that realized below its gas cost. Once crossed, live sending **halts for the rest of the day** (the keeper keeps scanning/simulating/logging). Resets at UTC midnight. |
 | `onchain_guard_frac` | On-chain `minProfit` is set to this fraction of the simulated edge (default 0.9). The tx reverts unless ≥90% of the expected profit still exists at inclusion — the core guard against the one-block edge closing. |
 | `max_gas_price_gwei` | Abort a send if live gas price exceeds this cap (`null` = no cap). |
 | `tx_deadline_s` | Seconds added to `now` for the `execute()` deadline; the tx reverts if not mined in time (default 30). |
 | `max_trades_per_day` | Stop sending after this many trades in a UTC day (default 25). |
-| `max_daily_loss_usd` | Stop sending once cumulative realized loss (reverted-tx gas) reaches this in a UTC day (default 5). |
 | `keeper_enabled` | Global on/off for all sends. |
 
 Single-flight: only one transaction is ever in flight at a time. Counters reset at UTC midnight.
@@ -149,15 +155,21 @@ Single-flight: only one transaction is ever in flight at a time. Counters reset 
    cd server && npm install
    ```
    This pulls `@noble/curves` + `@noble/hashes` (pure-JS secp256k1). They are lazy-loaded; simulate-only mode never imports them.
-4. **Provide the key via environment variable** (preferred — nothing touches disk):
+4. **Enable the pilot in config** — set `"live_enabled": true` in your `config.json` (it defaults to `false`). This is the deliberate master switch; without it `--live` stays read-only.
+5. **Provide the key via the environment variable ONLY** — there is no file or config key source. The key is never written to disk, logged, or committed:
    ```bash
    export KEEPER_PRIVATE_KEY=0x<your_dedicated_keeper_wallet_key>
    ```
-   Or, alternatively, put the `0x`-prefixed key alone in `server/keeper.key` (gitignored — **never commit it**).
-5. **Arm it:**
+   The derived address of this key **must equal the on-chain `keeper()`** you set in step 2, or the keeper refuses to start.
+6. **Start the live keeper as a NEW, separate process** (do not touch the running `arb-scanner` / `arb-keeper-dry`). Pass the key inline so it only ever lives in that process's environment:
    ```bash
-   node keeper.js --live
+   KEEPER_PRIVATE_KEY=0x<dedicated_keeper_key> pm2 start keeper.js --name arb-keeper-live -- --live
    ```
+   Or without pm2:
+   ```bash
+   KEEPER_PRIVATE_KEY=0x<dedicated_keeper_key> node keeper.js --live
+   ```
+   On startup the keeper prints its mode, the live-gate state (`live_enabled` / `--live` / key present → ARMED or read-only), and — if armed — the derived signer address and confirmation that it matches the on-chain `keeper()`. **Never** put the key in a file, a pm2 ecosystem file, shell history you commit, or `config.json`.
 
 ### Testing (no key, read-only)
 
@@ -185,9 +197,9 @@ The keeper writes its **own** CSV (`keeper_csv_path`, default `server/keeper_log
 | `opt_net_usd` | Engine net-after-gas profit at the optimal size — the metric the fire floor is applied to |
 | `sim_decision` | `ok`, `none`/`skip`, or the decoded revert name (e.g. `NoProfit`, `Expired`) |
 | `sim_net_usd` | Simulated net-after-gas profit in USD (when a candidate cleared the floor and was simulated) |
-| `action` | `skip`, `sim` (simulate-only), or `sent` |
-| `tx_hash` | Transaction hash if sent (blank otherwise) |
-| `realized_usd` | Realized profit/loss once the tx is mined |
+| `action` | `skip`, `sim` (simulate-only "would send"), or `live` (a real signed `execute()` tx was broadcast) |
+| `tx_hash` | Transaction hash of the live send (blank otherwise) |
+| `realized_usd` | Realized **net** USD once a live tx is mined — gross profit from the `Executed` event minus gas (negative on an on-chain revert, where only gas is lost) |
 | `error` | Any RPC/encode/send error surfaced for that cycle |
 | `shadow_cs_net_usd` | **v5.1.2** — on-chain `callStatic` net USD at the engine's optimal size (blank when out of band or the shadow call reverted) |
 | `shadow_cs_prof_tok` | **v5.1.2** — raw `callStatic` profit in the start token |
@@ -218,6 +230,8 @@ All keeper options live in `config.example.json` under the `_keeper_section` mar
 
 ### Security notes (keeper)
 
-- The private key is read **only** from `KEEPER_PRIVATE_KEY` or the gitignored `keeper.key`, **only** in `--live`, and is never logged, echoed, or committed. `.gitignore` covers `keeper.key`, `*.key`, `*.pem`, and `config.json`.
-- Simulate-only mode (the default) imports no signing library and holds no key — it is strictly read-only, exactly like the scanner.
+- The private key is read **only** from the `KEEPER_PRIVATE_KEY` environment variable, **only** when the live pilot is armed (`live_enabled` + `--live`). There is **no file or config key source** (removed in v5.2.0). The key is never written to disk, logged, echoed (not even masked-with-length), or committed. `.gitignore` still covers `*.key`, `*.pem`, and `config.json` as defence-in-depth.
+- On live start the signer's **public** derived address is verified against the executor's on-chain `keeper()`; a mismatch is a hard exit. Only that public address is ever printed.
+- Simulate-only mode (the default — and the only mode unless all live preconditions are met) imports no signing library and holds no key — it is strictly read-only, exactly like the scanner and the dry keeper.
+- `max_position_usd` bounds each trade's notional and `max_daily_loss_usd` halts sending for the UTC day once losses cross it, so even a worst case is bounded.
 - Use a dedicated keeper wallet with a small balance so that even in a worst case the exposure is bounded to its gas balance.

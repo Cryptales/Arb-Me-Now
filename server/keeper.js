@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Arb-Me-Now v5.1.2 — Keeper (simulate-first automatic execution)
+ * Arb-Me-Now v5.2.0 — Keeper (simulate-first, guarded live pilot)
  * ════════════════════════════════════════════════════════════════════════════
  * Reacts PER BLOCK: polls the chain tip, and the instant the block advances it
  * runs the same engine.js scan the browser and scanner use, picks the best
@@ -12,15 +12,24 @@
  * the edge has closed simply reverts (losing only gas) instead of trading at a
  * loss.
  *
- * SAFETY MODEL (read server/README.md before going live):
- *   • DEFAULT = simulate-only. Runs the full detect→build→simulate pipeline and
- *     logs what it WOULD do. Sends nothing. NO key required or read.
- *   • LIVE sending requires BOTH the --live flag AND a signing key in the env
- *     var KEEPER_PRIVATE_KEY or a gitignored key file. Missing either → refuse.
+ * SAFETY MODEL (read server/README.md before going live) — v5.2.0 guarded pilot:
+ *   • DEFAULT = simulate-only (dry). Runs the full detect→build→simulate pipeline
+ *     and logs what it WOULD do. Sends nothing. NO key required or read.
+ *   • LIVE sending requires ALL THREE to be true, or it stays read-only:
+ *       1) config live_enabled: true   (defaults false — never auto-enabled)
+ *       2) the --live CLI flag         (and NOT --dry, which always wins)
+ *       3) a valid KEEPER_PRIVATE_KEY env var whose DERIVED ADDRESS equals the
+ *          executor's on-chain keeper(). Env var ONLY — never a file/config.
+ *     If live_enabled+--live are set but the key is missing/invalid or the signer
+ *     doesn't match keeper(), the keeper HARD-EXITS (no silent fallback).
  *   • Single-flight: never more than one in-flight execution; new opportunities
  *     are skipped while a send is pending.
- *   • Kill switches (config): keeper_enabled, max_gas_price_gwei, min_profit_usd,
- *     max_trades_per_day, max_daily_loss_usd. All validated on startup.
+ *   • Guardrails (config, validated on startup): max_position_usd (per-trade
+ *     notional cap), max_daily_loss_usd (UTC-day kill-switch), min_net_usd floor,
+ *     the on-chain minProfit guard, plus keeper_enabled, max_gas_price_gwei,
+ *     max_trades_per_day.
+ *   • The private key is NEVER written to disk, logged, echoed (even masked), or
+ *     committed. Only the derived public address is ever printed.
  *   • The signing libs are loaded ONLY in --live / --selftest. The default
  *     simulate-only path uses engine.js + Node built-ins with zero npm install.
  *
@@ -28,7 +37,9 @@
  *   node keeper.js                 # simulate-only, continuous (default, safe)
  *   node keeper.js --dry --once    # one detect+scan+simulate cycle, then exit
  *   node keeper.js --selftest      # prove the signer works with a THROWAWAY key
- *   node keeper.js --live          # LIVE: send real txs (needs a key; see README)
+ *   KEEPER_PRIVATE_KEY=0x... node keeper.js --live
+ *                                  # LIVE: only sends if config live_enabled:true AND
+ *                                  # the key's address == on-chain keeper() (see README)
  *
  * Requirements: Node 18+ (built-in fetch). Live mode additionally needs the
  * signing deps — run `npm install` inside server/ once (see server/package.json).
@@ -47,10 +58,14 @@ const SIMTEST  = ARGV.includes('--simtest');   // simulate the best live route (
 const ONCE     = ARGV.includes('--once');
 const DRY_FLAG = ARGV.includes('--dry');
 // --live asks to send; --dry always wins and forces simulate-only (safety).
-const LIVE     = ARGV.includes('--live') && !DRY_FLAG;
+// NOTE: the CLI flag alone is NOT enough to send — effective live mode (the `LIVE`
+// const inside main()) ALSO requires config.live_enabled === true AND a valid
+// KEEPER_PRIVATE_KEY whose derived address matches the on-chain keeper().
+const LIVE_FLAG = ARGV.includes('--live') && !DRY_FLAG;
 
 const CHAIN_ID = 369;                                   // PulseChain mainnet
 const DEFAULT_EXECUTOR = '0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd'; // deployed ArbExecutor (public contract addr)
+const KEEPER_SELECTOR  = '0xaced1661';                  // keeper() view selector on the executor
 
 // ─── Config load + validation ───────────────────────────────────────────────
 function loadConfig() {
@@ -79,7 +94,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
-const KEEPER_VERSION = 'v5.1.3';
+const KEEPER_VERSION = 'v5.2.0';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -105,9 +120,14 @@ async function main() {
   const gasLimitBufPct  = num(CFG.gas_limit_buffer_pct ?? 25, 'gas_limit_buffer_pct', { min: 0, max: 300 });
   const maxTradesPerDay = num(CFG.max_trades_per_day ?? 25, 'max_trades_per_day', { min: 0, max: 100000 });
   const maxDailyLossUsd = num(CFG.max_daily_loss_usd ?? 5, 'max_daily_loss_usd', { min: 0 });
+  const maxPositionUsd  = num(CFG.max_position_usd ?? 400, 'max_position_usd', { min: 0 });
   const maxSimPerCycle  = num(CFG.max_sim_per_cycle ?? 3, 'max_sim_per_cycle', { min: 1, max: 20 });
   const keeperCsvRel    = CFG.keeper_csv_path || 'keeper_log.csv';
-  const keyFileRel      = CFG.keeper_key_file || 'keeper.key';
+  // v5.2.0 guarded live pilot: live sending requires live_enabled (config) AND --live (CLI)
+  // AND a valid KEEPER_PRIVATE_KEY whose derived address matches the on-chain keeper().
+  // Default OFF. If either switch is missing the keeper stays read-only exactly like dry mode.
+  const liveEnabled     = CFG.live_enabled === true;
+  const LIVE            = LIVE_FLAG && liveEnabled;
   // Shadow sizing telemetry (v5.1.2): read-only engine-vs-chain capture on the best route.
   const shadowEnabled   = CFG.shadow_enabled !== false;                 // default ON
   const shadowBandUsd   = num(CFG.shadow_band_usd ?? 0.50, 'shadow_band_usd', { min: 0 });
@@ -132,9 +152,12 @@ async function main() {
   const amountInRaw = E.parseUnits(amountInHuman, dec);
 
   // ─── Signer (live only) ─────────────────────────────────────────────────────
+  // Set up AFTER the RPC helpers below so we can verify the signer address against
+  // the on-chain keeper(). Declared here; populated just after getBlockNumber().
   let signer = null;
-  if (LIVE) {
-    signer = await setupSigner({ keyFileRel, rpcUrls });  // throws/exits on any problem
+  if (LIVE_FLAG && !liveEnabled) {
+    console.log('⚠ --live was passed but config live_enabled=false → staying READ-ONLY (no key read, nothing sent).');
+    console.log('  To arm the guarded live pilot, set "live_enabled": true in config.json AND relaunch with --live AND KEEPER_PRIVATE_KEY set.');
   }
 
   // ─── Robust RPC (timeout + retry/backoff + multi-URL fallback) ──────────────
@@ -170,6 +193,31 @@ async function main() {
     return j.result;
   }
   const getBlockNumber = async () => parseInt(await rpcOk('eth_blockNumber', []), 16);
+
+  // ─── Live signer setup + on-chain keeper() verification (v5.2.0) ────────────
+  // Only reached when BOTH config.live_enabled AND the --live flag are set. The key
+  // comes ONLY from the KEEPER_PRIVATE_KEY env var (never a file, never config). We
+  // derive the public signer address, then read the executor's on-chain keeper() and
+  // refuse to go live unless they match. Any problem is a HARD EXIT (no silent
+  // fallback to read-only). The private key is never logged or echoed.
+  if (LIVE) {
+    signer = await setupSigner();                        // env-only; exits on missing/invalid key
+    let onchainKeeper;
+    try {
+      const res = await rpcOk('eth_call', [{ to: executor, data: KEEPER_SELECTOR }, 'latest']);
+      onchainKeeper = '0x' + String(res).slice(-40).toLowerCase();
+    } catch (e) {
+      fail('could not read on-chain keeper() from executor ' + executor + ': ' + e.message + ' — refusing to go live.');
+    }
+    if (!/^0x[0-9a-f]{40}$/.test(onchainKeeper) || /^0x0{40}$/.test(onchainKeeper)) {
+      fail('on-chain keeper() is unset/zero on executor ' + executor + '. Authorize your dedicated keeper wallet with setKeeper(<addr>) first. Refusing to go live.');
+    }
+    if (signer.address.toLowerCase() !== onchainKeeper) {
+      fail('signer address ' + signer.address + ' does NOT match on-chain keeper() ' + onchainKeeper
+        + '. The contract would revert every execute(). Refusing to go live. (Only public addresses are shown; your key is never logged.)');
+    }
+    console.log('✓ signer matches on-chain keeper(): ' + onchainKeeper);
+  }
 
   // ─── Gas model (must match ui.js / scanner.js) ──────────────────────────────
   const GAS_BASE = 210000, GAS_HOP_V2 = 140000, GAS_HOP_V3 = 230000;
@@ -521,6 +569,17 @@ async function main() {
         continue;
       }
 
+      // ── max_position_usd: cap per-trade notional (v5.2.0) ──
+      // Skip any fire whose optimal-size notional (start-token size × USD price) exceeds
+      // the cap. With the default $400 cap and the pilot's small ref sizes this never
+      // triggers, so dry-mode logging is unchanged; it bounds exposure once live.
+      const optNotionalUsd = c.usdS != null ? toFloat(c.r.opt.amountIn, dec) * c.usdS : null;
+      if (maxPositionUsd != null && optNotionalUsd != null && optNotionalUsd > maxPositionUsd) {
+        console.log(`           → position ${fmtUsd(optNotionalUsd)} exceeds max_position_usd ${fmtUsd(maxPositionUsd)}; skip`);
+        logRow(['ok', simNetUsd.toFixed(4), 'skip', '', '', 'guard:max_position_usd']);
+        continue;
+      }
+
       if (!LIVE) {
         console.log(`           → SIMULATE-ONLY mode: would send (use --live + key to execute).`);
         logRow(['ok', simNetUsd.toFixed(4), 'sim', '', '', '']);
@@ -536,7 +595,7 @@ async function main() {
         acted = true;
       } catch (e) {
         console.error(`           → send failed: ${e.message}`);
-        logRow(['ok', simNetUsd.toFixed(4), 'sent', '', '', 'send_error:' + e.message]);
+        logRow(['ok', simNetUsd.toFixed(4), 'live', '', '', 'send_error:' + e.message]);
         await notify(`⚠️ <b>Keeper send failed</b>\n${routeStr(r)}\n${e.message}`);
       } finally {
         busy = false;
@@ -577,8 +636,9 @@ async function main() {
     const txHash = await rpcOk('eth_sendRawTransaction', [rawTx]);
     console.log(`           → SENT ${txHash} (nonce ${nonce}, gas ${gasLimit})`);
     daily.trades++;
-    logRow(['ok', simNetUsd.toFixed(4), 'sent', txHash, '', '']);
-    await notify(`🚀 <b>Keeper SENT</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)}\n<code>${txHash}</code>`);
+    // action=live: a real signed execute() transaction was broadcast (v5.2.0).
+    logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, '', '']);
+    await notify(`🚀 <b>Keeper SENT (live)</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)}\n<code>${txHash}</code>`);
 
     // Await receipt
     const receipt = await waitReceipt(txHash, 60000);
@@ -588,17 +648,20 @@ async function main() {
       return;
     }
     const ok = BigInt(receipt.status) === 1n;
-    const realized = ok ? decodeRealizedUsd(receipt, c.usdS, dec, sk.keccak) : null;
+    const gasUsd = c.gasUsd != null ? c.gasUsd : 0;
+    const realizedGross = ok ? decodeRealizedUsd(receipt, c.usdS, dec, sk.keccak) : null;
     if (ok) {
-      console.log(`           → SUCCESS ${txHash} realized ${fmtUsd(realized)}`);
-      logRow(['ok', simNetUsd.toFixed(4), 'sent', txHash, realized != null ? realized.toFixed(4) : '', '']);
-      await notify(`✅ <b>Keeper SUCCESS</b>\n${routeStr(r)}\nrealized ${fmtUsd(realized)}\n<code>${txHash}</code>`);
+      // realized_usd = net on-chain result (gross profit from the Executed event − gas spent).
+      const realizedNet = realizedGross != null ? realizedGross - gasUsd : null;
+      if (realizedNet != null && realizedNet < 0) daily.lossUsd += -realizedNet;  // kill-switch: a trade that realized below its gas cost
+      console.log(`           → SUCCESS ${txHash} realized net ${fmtUsd(realizedNet)} (gross ${fmtUsd(realizedGross)} − gas ${fmtUsd(gasUsd)})`);
+      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, realizedNet != null ? realizedNet.toFixed(4) : '', '']);
+      await notify(`✅ <b>Keeper SUCCESS</b>\n${routeStr(r)}\nrealized net ${fmtUsd(realizedNet)}\n<code>${txHash}</code>`);
     } else {
       // reverted on-chain (edge closed by inclusion): lost only gas
-      const gasUsd = c.gasUsd != null ? c.gasUsd : 0;
       daily.lossUsd += gasUsd;
       console.log(`           → REVERTED on-chain ${txHash} (edge closed; lost ~${fmtUsd(gasUsd)} gas)`);
-      logRow(['ok', simNetUsd.toFixed(4), 'sent', txHash, (-gasUsd).toFixed(4), 'reverted_onchain']);
+      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, (-gasUsd).toFixed(4), 'reverted_onchain']);
       await notify(`❌ <b>Keeper tx reverted</b> (edge closed; only gas lost ~${fmtUsd(gasUsd)})\n<code>${txHash}</code>`);
     }
   }
@@ -634,10 +697,11 @@ async function main() {
   // ─── Startup banner ─────────────────────────────────────────────────────────
   console.log(`Arb-Me-Now ${KEEPER_VERSION} keeper`);
   console.log(`  Mode        : ${LIVE ? '🔴 LIVE (will send real transactions)' : '🟢 SIMULATE-ONLY (no key, sends nothing)'}`);
+  console.log(`  Live gate   : live_enabled=${liveEnabled} | --live=${LIVE_FLAG} | KEEPER_PRIVATE_KEY=${process.env.KEEPER_PRIVATE_KEY ? 'present' : 'absent'} → ${LIVE ? 'ARMED' : 'read-only'}`);
   console.log(`  Executor    : ${executor}`);
   console.log(`  Start token : ${startToken}  |  ref size: ${amountInHuman}  |  V3 depth: ${v3Depth}  |  triangular: ${doTriangular}`);
   console.log(`  Min profit  : ${fmtUsd(minProfitUsd)} net after gas  |  on-chain guard: ${(onchainGuardFrac * 100).toFixed(0)}% of edge`);
-  console.log(`  Guards      : maxGas ${maxGasPriceGwei == null ? 'none' : maxGasPriceGwei + ' gwei'} | maxTrades/day ${maxTradesPerDay} | maxLoss/day ${fmtUsd(maxDailyLossUsd)} | enabled ${keeperEnabled}`);
+  console.log(`  Guards      : maxPos ${fmtUsd(maxPositionUsd)} | maxGas ${maxGasPriceGwei == null ? 'none' : maxGasPriceGwei + ' gwei'} | maxTrades/day ${maxTradesPerDay} | maxLoss/day ${fmtUsd(maxDailyLossUsd)} (kill-switch) | enabled ${keeperEnabled}`);
   console.log(`  Poll        : ${pollIntervalMs}ms  |  RPC: ${rpcUrls[0]}${rpcUrls.length > 1 ? ' (+' + (rpcUrls.length - 1) + ' fallback)' : ''}`);
   console.log(`  CSV         : ${CSV_PATH}`);
   console.log(`  Telegram    : ${tgReady ? 'configured (execution notices)' : 'not configured (execution notices disabled)'}`);
@@ -796,35 +860,30 @@ function makeSigner(privHex, libs) {
   return { address, signLegacyTx, selfCheck, keccak: keccak_256, _secp: secp };
 }
 
-async function setupSigner({ keyFileRel, rpcUrls }) {
+async function setupSigner() {
   const libs = loadSigningLibs();
-  // Key source: env var preferred, else gitignored key file.
-  let keyHex = process.env.KEEPER_PRIVATE_KEY;
-  let source = 'env KEEPER_PRIVATE_KEY';
+  // v5.2.0: the key comes ONLY from the KEEPER_PRIVATE_KEY env var — NEVER from a
+  // file, config, or any other source. It is never written to disk, logged, or echoed
+  // (not even masked). On any problem we HARD EXIT rather than silently fall back.
+  const keyHex = process.env.KEEPER_PRIVATE_KEY;
   if (!keyHex) {
-    const kf = path.isAbsolute(keyFileRel) ? keyFileRel : path.join(__dirname, keyFileRel);
-    if (fs.existsSync(kf)) {
-      keyHex = fs.readFileSync(kf, 'utf8').trim();
-      source = 'key file ' + kf;
-    }
-  }
-  if (!keyHex) {
-    fail('--live requires a signing key, and none was found.\n' +
-         '  Provide it one of two ways (NEVER commit it):\n' +
-         '    export KEEPER_PRIVATE_KEY=0x...     (recommended)\n' +
-         '    or put the 0x-prefixed key in server/keeper.key (gitignored)\n' +
+    fail('live pilot is armed (live_enabled + --live) but KEEPER_PRIVATE_KEY is not set.\n' +
+         '  Supply the dedicated keeper wallet key ONLY via the env var at launch (NEVER commit or write it to disk):\n' +
+         '    KEEPER_PRIVATE_KEY=0x... pm2 start keeper.js --name arb-keeper-live -- --live\n' +
          '  Use a DEDICATED low-balance keeper wallet, authorized via setKeeper() on the executor.');
   }
-  if (!/^0x?[0-9a-fA-F]{64}$/.test(keyHex)) fail('signing key is malformed (need 32 bytes / 64 hex chars). Source: ' + source);
+  if (!/^0x?[0-9a-fA-F]{64}$/.test(keyHex)) {
+    fail('KEEPER_PRIVATE_KEY is malformed (need 32 bytes / 64 hex chars). The key value is never logged.');
+  }
 
   let sk;
   try { sk = makeSigner(keyHex, libs); }
-  catch (e) { fail('could not derive signer from key: ' + e.message); }
+  catch (e) { fail('could not derive signer from KEEPER_PRIVATE_KEY: ' + e.message + ' (the key value is never logged).'); }
 
   // Live pre-flight self-test: sign a dummy and ecrecover back to the same address.
   if (!sk.selfCheck()) fail('signer self-check FAILED (sign/recover mismatch) — refusing to go live');
-  console.log(`✓ signer loaded from ${source}: ${sk.address} (self-check passed)`);
-  // keyHex no longer needed in the outer scope; it lives only inside the closure.
+  console.log(`✓ signer loaded from env KEEPER_PRIVATE_KEY: ${sk.address} (self-check passed; key never logged)`);
+  // keyHex lives only inside the makeSigner closure from here on.
   return sk;
 }
 
