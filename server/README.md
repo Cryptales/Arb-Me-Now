@@ -172,18 +172,32 @@ node keeper.js --dry             # live: continuous per-block poll, simulate-onl
 
 ### Keeper log (CSV)
 
-The keeper writes its **own** CSV (`keeper_csv_path`, default `server/keeper_log.csv`) — completely separate from the scanner's `scan_log.csv`. One row per decision:
+The keeper writes its **own** CSV (`keeper_csv_path`, default `server/keeper_log.csv`) — completely separate from the scanner's `scan_log.csv`. Since **v5.1.1** it logs one row **every block** carrying the single best route it saw (with the same metric columns the scanner records), then the keeper's own decision columns, and — new in **v5.1.2** — three shadow sizing-telemetry columns. 23 columns in all:
 
 | Column | Meaning |
 |---|---|
 | `timestamp`, `block` | When the decision was made and the block it simulated at |
-| `route`, `venues` | The route (e.g. `WPLS>pDAI>WPLS`) and the pools/venues it runs through |
-| `sim_decision` | `ok`, `skip`, or the decoded revert name (e.g. `NoProfit`, `Expired`) |
-| `sim_net_usd` | Simulated net-after-gas profit in USD |
+| `gas_price_gwei`, `routes_evaluated` | Live gas price and how many routes the engine evaluated that block |
+| `best_route`, `best_type`, `best_pools` | The best route (e.g. `WPLS>pDAI>WPLS`), `2hop`/`tri`, and the pools/venues it runs through |
+| `mid_gap_pct` | The best route's mid-price gap (%) — the raw price dislocation |
+| `opt_size_tok`, `opt_gross_usd`, `opt_bps` | Engine optimal size (start token), gross profit (USD), and profit in basis points |
+| `gas_units`, `gas_usd` | Estimated gas units and their USD cost |
+| `opt_net_usd` | Engine net-after-gas profit at the optimal size — the metric the fire floor is applied to |
+| `sim_decision` | `ok`, `none`/`skip`, or the decoded revert name (e.g. `NoProfit`, `Expired`) |
+| `sim_net_usd` | Simulated net-after-gas profit in USD (when a candidate cleared the floor and was simulated) |
 | `action` | `skip`, `sim` (simulate-only), or `sent` |
 | `tx_hash` | Transaction hash if sent (blank otherwise) |
 | `realized_usd` | Realized profit/loss once the tx is mined |
 | `error` | Any RPC/encode/send error surfaced for that cycle |
+| `shadow_cs_net_usd` | **v5.1.2** — on-chain `callStatic` net USD at the engine's optimal size (blank when out of band or the shadow call reverted) |
+| `shadow_cs_prof_tok` | **v5.1.2** — raw `callStatic` profit in the start token |
+| `shadow_ratio` | **v5.1.2** — `callStatic` profit ÷ engine profit; **>1 means the engine under-estimated** (if the shadow call reverted, the decoded reason appears here instead) |
+
+### Shadow sizing telemetry (v5.1.2)
+
+The engine's optimal-size estimate (`opt_net_usd`) is deliberately conservative: `engine.js`'s adaptive V3 tick-depth reads only a couple of tick intervals when the reference `amount_in` is small, so at **large** optimal sizes during a real wide-gap event it can under-predict the true on-chain profit (one historical fire: engine `+$0.49` vs on-chain `callStatic` `+$2.81`, ~5.7×). Because the keeper only `callStatic`-simulates candidates that already clear the `$0.50` fire floor, a genuine wide-gap event where the engine computes a below-floor number would otherwise never be captured.
+
+The shadow logger closes that gap. On **every** block, when the best route's engine `opt_net_usd` is within `shadow_band_usd` of the fire floor (`opt_net_usd >= min_profit_usd - shadow_band_usd`), it runs **one** extra read-only `callStatic` on that best route at the engine's optimal size and records the on-chain result alongside the engine's estimate. It is **SIMULATE-ONLY** — a pure `eth_call` from the owner address that can never send a transaction — and adds at most one extra RPC call per block, only when in-band. Toggle it with `shadow_enabled` (default on) and tune the near-miss window with `shadow_band_usd` (default `0.50`). The next real wide-gap fire is then self-documenting: `shadow_ratio > 1` quantifies exactly how much the engine under-sized it.
 
 ### Telegram
 

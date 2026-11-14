@@ -78,5 +78,11 @@
   "_keeper_csv_help": "Keeper's own CSV log (separate from the scanner's scan_log.csv). Relative paths resolve inside server/. Gitignored by default.",
 
   "keeper_key_file": "keeper.key",
-  "_keeper_key_help": "OPTIONAL fallback key source for --live if KEEPER_PRIVATE_KEY is not set: a file containing only the 0x-prefixed private key. This file is gitignored — NEVER commit it. Prefer the env var. Use a DEDICATED low-balance keeper wallet."
+  "_keeper_key_help": "OPTIONAL fallback key source for --live if KEEPER_PRIVATE_KEY is not set: a file containing only the 0x-prefixed private key. This file is gitignored — NEVER commit it. Prefer the env var. Use a DEDICATED low-balance keeper wallet.",
+
+  "shadow_enabled": true,
+  "_shadow_enabled_help": "v5.1.2 shadow sizing telemetry: run ONE extra read-only callStatic on the best route each block (SIMULATE-ONLY, never sends) to log engine-vs-chain profit side-by-side. Set false to disable.",
+
+  "shadow_band_usd": 0.50,
+  "_shadow_band_help": "Only shadow-simulate when the best route's engine opt_net_usd >= min_profit_usd - shadow_band_usd. Captures near-miss wide-gap events the conservative engine under-sizes below the fire floor. Adds at most one eth_call per block, only in-band. Writes shadow_cs_net_usd (on-chain callStatic net USD at the engine's optimal size), shadow_cs_prof_tok (raw profit in start token), shadow_ratio (callStatic profit / engine profit; >1 means the engine under-estimated)."
 }

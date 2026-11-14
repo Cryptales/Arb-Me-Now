@@ -1,4 +1,4 @@
-# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.1.1
+# ⚡ Arb-Me-Now — PulseChain Arbitrage Scanner v5.1.2
 
 **Free, open-source, browser-native arbitrage intelligence for the PulseChain DeFi ecosystem.**
 
@@ -115,6 +115,11 @@ The full explanation with a worked example is in the white paper, §5.1.
 ---
 
 ## Changelog
+
+### v5.1.2 (2026-11-14)
+- **Shadow sizing-telemetry logger (keeper, read-only).** The dry keeper now runs **one** extra read-only `callStatic` on the single best route each block — gated to a near-miss band (`opt_net_usd >= min_profit_usd - shadow_band_usd`) — and logs the on-chain result beside the engine's own estimate. It captures engine-vs-chain side-by-side so the next real wide-gap event is self-documenting, because `engine.js`'s conservative adaptive V3 depth under-sizes profit at large optimal sizes (one historical fire: engine +$0.49 vs on-chain +$2.81, ~5.7×) which the keeper's fire-floor-gated simulation would otherwise never record.
+- **3 new `keeper_log.csv` columns** (23 total): `shadow_cs_net_usd` (on-chain `callStatic` net USD at the engine's optimal size), `shadow_cs_prof_tok` (raw profit in the start token), `shadow_ratio` (`callStatic` profit ÷ engine profit; **>1 means the engine under-estimated**). **2 new config keys**: `shadow_enabled` (default on), `shadow_band_usd` (default $0.50).
+- **Strictly simulate-only** — a pure `eth_call` from the owner address that can never send a transaction; adds at most one extra RPC call per block, only when in-band. No sizing or engine logic changed. Verified by syntax check plus a read-only engine run exercising `buildCalldata` + `simulateExecute` on the live best route (returns a number without sending); the live CSV and pm2 processes were not touched.
 
 ### v5.1.1 (2026-11-14)
 - **Enriched keeper telemetry — best route per block with scanner-parity metrics.** The dry keeper's `keeper_log.csv` now logs the single best route it saw on **every** block (not just a bare `none,skip` row when nothing clears the floor), mirroring the scanner's `scan_log.csv` metric columns from the identical `engine.js` fields: best route/type/pools, mid-gap %, optimal size/gross/bps, gas units/USD and optimal net USD. Every code path — no-candidate, below-floor, revert, guard-blocked, simulate/would-send, sent, errors — carries the populated best-route columns alongside the keeper's own `sim_decision` / `action` / `tx_hash` / `realized_usd` decision columns, so a dry run reviews apples-to-apples against the scanner.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Arb-Me-Now v5.1 — Keeper (simulate-first automatic execution)
+ * Arb-Me-Now v5.1.2 — Keeper (simulate-first automatic execution)
  * ════════════════════════════════════════════════════════════════════════════
  * Reacts PER BLOCK: polls the chain tip, and the instant the block advances it
  * runs the same engine.js scan the browser and scanner use, picks the best
@@ -79,6 +79,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
+const KEEPER_VERSION = 'v5.1.2';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -107,6 +108,9 @@ async function main() {
   const maxSimPerCycle  = num(CFG.max_sim_per_cycle ?? 3, 'max_sim_per_cycle', { min: 1, max: 20 });
   const keeperCsvRel    = CFG.keeper_csv_path || 'keeper_log.csv';
   const keyFileRel      = CFG.keeper_key_file || 'keeper.key';
+  // Shadow sizing telemetry (v5.1.2): read-only engine-vs-chain capture on the best route.
+  const shadowEnabled   = CFG.shadow_enabled !== false;                 // default ON
+  const shadowBandUsd   = num(CFG.shadow_band_usd ?? 0.50, 'shadow_band_usd', { min: 0 });
 
   if (!/^0x[0-9a-fA-F]{40}$/.test(executor)) fail('config: executor_address is not a valid 0x address');
 
@@ -183,6 +187,7 @@ async function main() {
     'best_route', 'best_type', 'best_pools', 'mid_gap_pct',
     'opt_size_tok', 'opt_gross_usd', 'opt_bps', 'gas_units', 'gas_usd', 'opt_net_usd',
     'sim_decision', 'sim_net_usd', 'action', 'tx_hash', 'realized_usd', 'error',
+    'shadow_cs_net_usd', 'shadow_cs_prof_tok', 'shadow_ratio',
   ].join(',');
   function csvCell(v) { if (v == null) return ''; const s = String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
   function csvNum(v, dp) { return (v == null || !isFinite(v)) ? '' : Number(v).toFixed(dp); }
@@ -197,6 +202,7 @@ async function main() {
   // — no-candidate, below-floor, revert, guard, sim, sent, error — reports the same single
   // best executable route the keeper saw that block, exactly as scanner.js logs it.
   let curScan = null;
+  let curShadow = null;   // v5.1.2: read-only engine-vs-chain capture for the current block (or null)
   function prefix(scanOrBlock) {
     // Accept either a scan result (normal path) or a bare block number (pre-scan errors).
     const scan = (scanOrBlock && typeof scanOrBlock === 'object') ? scanOrBlock : null;
@@ -213,7 +219,15 @@ async function main() {
     return [nowIso(), b, csvNum(gasGwei, 3), re, '', '', '', '', '', '', '', '', '', ''];
   }
   // keeperFields = [sim_decision, sim_net_usd, action, tx_hash, realized_usd, error]
-  function logRow(keeperFields) { csvAppend([...prefix(curScan), ...keeperFields]); }
+  // v5.1.2: every row also carries the 3 shadow cells so the 23-column schema stays aligned.
+  function logRow(keeperFields) {
+    const sh = curShadow
+      ? [ csvNum(curShadow.net, 4),
+          csvNum(curShadow.profTok, 4),
+          (curShadow.ratio != null ? csvNum(curShadow.ratio, 3) : (curShadow.revert || '')) ]
+      : ['', '', ''];
+    csvAppend([...prefix(curScan), ...keeperFields, ...sh]);
+  }
 
   // ─── Telegram (execution notices only) ──────────────────────────────────────
   async function notify(text) {
@@ -332,7 +346,7 @@ async function main() {
       };
     }
 
-    return { block, candidates: cand, usdS, gasPrice, wpls, best, routesEvaluated: allRows.length };
+    return { block, candidates: cand, usdS, gasPrice, wpls, best, bestR: bestRow ? bestRow.r : null, routesEvaluated: allRows.length };
   }
 
   // ─── callStatic simulation of the exact execute() call ──────────────────────
@@ -375,10 +389,36 @@ async function main() {
     catch (e) {
       console.error(`[${nowIso()}] blk ${block}: scan error: ${e.message}`);
       curScan = null;
-      csvAppend([...prefix(block), 'scan_error', '', 'skip', '', '', e.message]);
+      curShadow = null;
+      csvAppend([...prefix(block), 'scan_error', '', 'skip', '', '', e.message, '', '', '']);
       return;
     }
     curScan = scan;   // best-route metrics for every row logged this cycle
+
+    // ── Shadow sizing telemetry (v5.1.2) ──────────────────────────────────────
+    // Read-only: run ONE extra callStatic on the best route when its engine opt_net_usd is
+    // within shadow_band_usd of the fire floor, so a real wide-gap event is captured
+    // engine-vs-chain even if the engine's conservative adaptive-depth under-sizes it below
+    // the floor. NEVER sends — simulate() with no signer is a pure eth_call from the owner.
+    curShadow = null;
+    if (shadowEnabled && scan.bestR && scan.best && scan.best.optNetUsd != null
+        && scan.best.optNetUsd >= (minProfitUsd - shadowBandUsd)) {
+      try {
+        const built = buildCalldata({ r: scan.bestR });   // buildCalldata only reads c.r
+        const sim = await simulate({ r: scan.bestR }, built); // no signer => read-only callStatic from owner
+        if (sim.ok) {
+          const shProfUsd = scan.usdS != null ? toFloat(sim.profit, dec) * scan.usdS : null;
+          const shNet = (shProfUsd != null && scan.best.gasUsd != null) ? shProfUsd - scan.best.gasUsd : null;
+          const ratio = (shProfUsd != null && scan.best.optProfUsd) ? shProfUsd / scan.best.optProfUsd : null;
+          curShadow = { net: shNet, profTok: toFloat(sim.profit, dec), ratio, revert: null };
+        } else {
+          curShadow = { net: null, profTok: null, ratio: null, revert: (sim.name || 'Revert') };
+        }
+      } catch (e) {
+        curShadow = { net: null, profTok: null, ratio: null, revert: 'err:' + String(e.message).slice(0, 40) };
+      }
+    }
+
     const b = scan.block || block;
     if (!scan.candidates.length) {
       const bm = scan.best;
@@ -543,7 +583,7 @@ async function main() {
   }
 
   // ─── Startup banner ─────────────────────────────────────────────────────────
-  console.log('Arb-Me-Now v5.1 keeper');
+  console.log(`Arb-Me-Now ${KEEPER_VERSION} keeper`);
   console.log(`  Mode        : ${LIVE ? '🔴 LIVE (will send real transactions)' : '🟢 SIMULATE-ONLY (no key, sends nothing)'}`);
   console.log(`  Executor    : ${executor}`);
   console.log(`  Start token : ${startToken}  |  ref size: ${amountInHuman}  |  V3 depth: ${v3Depth}  |  triangular: ${doTriangular}`);
