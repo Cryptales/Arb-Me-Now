@@ -3,7 +3,7 @@ import re, sys, markdown
 from weasyprint import HTML
 
 SRC = '/home/ubuntu/arb_build/WHITEPAPER.md'
-OUT = sys.argv[1] if len(sys.argv) > 1 else '/home/ubuntu/arb_me_now_output/Arb-Me-Now_WhitePaper_v4.4.pdf'
+OUT = sys.argv[1] if len(sys.argv) > 1 else '/home/ubuntu/arb_me_now_output/Arb-Me-Now_WhitePaper.pdf'
 
 md = open(SRC, encoding='utf-8').read()
 # Drop the markdown title block (cover replaces it) — everything up to the first '---'
