@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v5.1.1</title>
+  <title>Arb-Me-Now | PulseChain Arbitrage Scanner v5.1.2</title>
   <style>
     :root {
       --bg-primary: #0b0e14;
@@ -124,7 +124,7 @@
 <header>
   <div class="brand">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-    Arb-Me-Now <span class="brand-sub">v5.1.1 — PulseChain on-chain scanner + LibertySwap</span>
+    Arb-Me-Now <span class="brand-sub">v5.1.2 — PulseChain on-chain scanner + LibertySwap</span>
   </div>
   <nav>
     <button id="nav-dashboard" class="active" onclick="switchView('dashboard')">Scanner</button>
@@ -231,6 +231,48 @@
     <div class="docs-section" style="background:var(--bg-secondary,#161b22);border:1px solid var(--border-color,#30363d);border-radius:8px;padding:1rem 1.25rem;margin-bottom:1rem">
       <h4 style="margin:0 0 0.4rem">📘 Full Process Manual &amp; White Paper</h4>
       <p style="margin:0">Detailed methodology, operating procedure, swap maths, verified fees, risks and version history — <a href="Arb-Me-Now_WhitePaper_v4.4.pdf" target="_blank" rel="noopener" style="color:#f97316;font-weight:600">PDF edition ↗</a> · <a href="WHITEPAPER.md" target="_blank" rel="noopener" style="color:var(--accent-cyan,#58a6ff);font-weight:600">Markdown ↗</a></p>
+    </div>
+    <div class="docs-section"><h4>⚙️ Settings guide — how to get the best results (v5.1.2)</h4>
+      <p>These dashboard controls are your <b>exploration cockpit</b> — they decide what the engine shows you when you scan. They are separate from the server keeper's <code>config.json</code>. Think of it this way: the dashboard is where you <b>learn</b> the right settings, and the server config is where you later <b>lock them in</b>. The single most important idea below is that your trade size silently controls how deeply the engine reads V3 liquidity — so setting it realistically is the #1 optimization on your end.</p>
+      <p><b>🥇 The setting that matters most: your trade size.</b> The <code>Your trade size</code> field (<code>#in-size</code>) is not just a display number — it drives how many V3 tick intervals the engine reads through its adaptive-depth logic. The engine reads only as many intervals as your stated size needs. The default <code>1000</code> WPLS is about half a cent, so the engine reads the bare minimum (~2 intervals) and will <b>under-estimate</b> profit on any real-sized trade. Set this to the capital you would actually deploy per trade (for example several million WPLS if that's your real size). The moment you do, the engine models the deeper liquidity and its profit numbers become <b>more accurate</b> — and usually bigger — on exactly the wide-gap events that matter. Leaving it at <code>1000</code> is the #1 way to make the engine look artificially pessimistic. (This is the verified finding from the v5.1.2 shadow-telemetry data review.)</p>
+      <p><b>🥈 V3 tick depth cap — the paired lever.</b> The <code>V3 tick depth cap</code> slider (<code>#in-tickdepth</code>, range 1–8, default 4) caps how far the adaptive-depth logic is <b>allowed</b> to read. The key point: it only does anything once your trade size is realistic — at size <code>1000</code>, depth 2 / 4 / 8 give identical results (verified). Once your trade size is realistic, raise this to <b>6–8</b> so the engine isn't truncating liquidity on big trades. The only cost is a few more RPC reads per V3 pool (slightly slower scans) — negligible on a desktop, so running at 8 is fine. Trade size and depth cap are a <b>pair</b>: trade size tells the engine how much liquidity to model; the depth cap sets the ceiling. Tune them together, never in isolation.</p>
+      <p><b>🛡️ The safety-first mindset — read this before trusting any number.</b> Three mechanics to internalize:</p>
+      <ul>
+        <li><b><code>opt_net_usd</code> is a conservative floor, not a ceiling.</b> Because of the adaptive-depth conservatism, the engine's estimated net is deliberately pessimistic at large sizes — the real on-chain result is often higher. The review measured one historical event where the engine said <b>+$0.49</b> but the on-chain <code>callStatic</code> returned <b>+$2.81</b>. Treat a positive <code>opt_net_usd</code> as "at least this much," and treat the on-chain dry-run / <code>callStatic</code> as ground truth before acting.</li>
+        <li><b>The suspicious / dust guards exist to protect you.</b> By default the scanner hides routes flagged <code>dust depth</code> (a leg can only absorb under ~$25 — the <code>DUST_USD</code> guard) and <code>gap &gt;50%</code> (a broken or mispriced pool). These are not profit opportunities — they are illiquid mirages that look amazing on paper and revert or slip catastrophically in reality. The "Show suspicious / dust pools" toggle reveals them for curiosity only; never trade them.</li>
+        <li><b><code>minProfit</code> protects every executed trade.</b> When you actually execute (Trade Companion, or the keeper), the on-chain <code>minProfit</code> guard reverts the transaction if the edge has closed — so a trade that lands late simply costs gas, never trades at a loss. The dashboard's job is to find candidates; the contract's job is to refuse bad fills.</li>
+      </ul>
+      <p><b>⏱️ When is it safe to act? Multi-block consistency beats chasing flashes.</b></p>
+      <ul>
+        <li>A route that shows profitable for a <b>single</b> block is usually a one-block flash — by the time a human reacts it's gone. The keeper exists for those; a human dashboard user should not chase them.</li>
+        <li>A route that stays profitable across <b>multiple consecutive</b> scans / blocks is a genuinely durable edge, and the kind a manual user can realistically capture. Watch for persistence before acting.</li>
+        <li>Use <b>Auto-refresh every 15s</b> to watch whether an edge persists. If the same route clears your floor on several refreshes in a row, that's your green light to dry-run it in Trade Companion.</li>
+        <li>When deciding to change your <b>settings</b> (trade size / depth), do it on accumulated evidence — e.g. the shadow-telemetry digest showing the engine under-estimated on real events — not on a single scan. Change settings deliberately and re-scan to measure the effect, one variable at a time.</li>
+      </ul>
+      <p><b>📋 The rest, ranked by impact.</b></p>
+      <ul>
+        <li><code>Start / end token</code> (<code>#in-start</code>): WPLS is the best default — deepest liquidity, and most routes cycle through it. Switch only to hunt a specific token's cycles.</li>
+        <li><b>Venue toggles</b> (<code>PulseX v1/v2</code>, <code>9mm v2</code>, <code>LibertySwap V3</code>, <code>bridge</code>): keep <b>all on</b>. Every venue disabled removes routes; more venues = more cross-venue gaps. The only cost is scan time.</li>
+        <li><code>Triangular 3-hop routes</code>: on to hunt more exotic gaps, off for a cleaner 2-hop-only view with less noise.</li>
+        <li><code>Min profit (bps of input)</code> (<code>#in-minbps</code>): start at <code>0</code> to see everything including break-even; raise it only to hide small stuff. It's basis-points-of-input, not USD (100 = 1% of your trade).</li>
+        <li><code>Recipient for LibertySwap quotes</code> (<code>#in-recipient</code>): leave blank — it's optional, quotes-only, and nothing is signed.</li>
+      </ul>
+      <p><b>🚦 Recommended starting profile</b> — to see the engine at its most accurate:</p>
+      <ul>
+        <li><b>Trade size:</b> your real per-trade capital (e.g. <code>5,000,000</code> WPLS), <b>not</b> <code>1000</code></li>
+        <li><b>V3 tick depth cap:</b> <code>8</code></li>
+        <li><b>All venues on; Triangular on</b></li>
+        <li><b>Min profit:</b> <code>0</code> (widen your view first, filter later)</li>
+        <li><b>Auto-refresh on; Alert on</b></li>
+      </ul>
+      <p>Then scan a few times and watch how the profit numbers compare to what you saw at size <code>1000</code> — you'll see the conservatism lift.</p>
+      <p><b>🔄 The staged approach (recommended methodology).</b></p>
+      <ul>
+        <li><b>Stage 1 — Observe (conservative):</b> run with the recommended profile, auto-refresh on, and just <b>watch</b>. Let the shadow-telemetry digest accumulate. Don't change engine/server settings yet. Goal: gather evidence on how often real edges appear and how durable they are.</li>
+        <li><b>Stage 2 — Measure:</b> when the shadow digest reports a <code>shadow_ratio &gt; 1</code> (engine under-estimated true on-chain profit), or you see routes persist across multiple blocks, you have evidence the conservative defaults are leaving money on the table.</li>
+        <li><b>Stage 3 — Tune incrementally:</b> raise the server config's <code>amount_in</code> toward realistic size and <code>v3_depth</code> toward <code>8</code> <b>together</b>, re-run, and compare the engine estimate to on-chain <code>callStatic</code> until they converge. One change at a time; measure after each.</li>
+        <li><b>Stage 4 — Lock in:</b> once the dashboard/engine numbers are accurate at realistic size and the dry keeper confirms it would have captured real profit, port the winning values into <code>server/config.json</code> so the keeper runs at accurate settings. Dashboard teaches, digest proves, server config locks it in.</li>
+      </ul>
     </div>
     <div class="docs-section"><h4>🤖 New in v5.1: the keeper (automatic execution)</h4>
       <p>v5.1 adds <code>server/keeper.js</code> — a separate program that watches the chain <b>per block</b> and, when a route clears your profit floor, simulates the exact <code>execute()</code> call against the live ArbExecutor contract before acting. The data drives the design: profitable windows are rare (~0.23% of scans) and almost always last <b>exactly one block</b>, so a 30 s scanner sees them only after they close. The keeper reacts within a block and sets an <b>on-chain minProfit guard</b> (default 90% of the simulated edge) so a transaction that lands after the gap closes simply reverts — losing only gas, never trading at a loss. <b>Safety first:</b> the default behaviour is simulate-only and read-only; sending requires three deliberate switches — the <code>--live</code> flag, a private key (from the <code>KEEPER_PRIVATE_KEY</code> env var or a gitignored key file), and <code>keeper_enabled</code> in config — plus kill switches (max gas price, max trades/day, max daily loss). Use a dedicated low-balance keeper wallet authorized on-chain via <code>setKeeper()</code>; the keeper never needs the owner key. <b>v5.1.1</b> enriches the keeper's per-block <code>keeper_log.csv</code> so it records the single best route it saw on <b>every</b> block with the same metric columns the scanner's <code>scan_log.csv</code> carries (route/type/pools, mid-gap %, optimal size/gross/bps, gas units/USD, net USD) — computed from the identical engine fields — so a dry run reviews apples-to-apples against the scanner. Full setup and the go-live checklist are in <code>server/README.md</code> and White Paper §3.15.</p>
