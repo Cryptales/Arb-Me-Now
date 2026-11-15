@@ -39,7 +39,7 @@
   "rpc_urls": ["https://rpc.pulsechain.com"],
   "_rpc_help": "PulseChain RPC endpoint(s). The scanner uses the first; the keeper tries all of them in order with timeout + retry/backoff. Add one or two backups for resilience.",
 
-  "_keeper_section": "─── v5.2 keeper (guarded live pilot) — read server/README.md before --live ───",
+  "_keeper_section": "─── v5.3 keeper (guarded live pilot + inclusion speed) — read server/README.md before --live ───",
 
   "live_enabled": false,
   "_live_enabled_help": "v5.2.0 GUARDED LIVE PILOT master switch. Default false = the keeper is strictly read-only (simulate-only), exactly like the dry keeper. Sending a real transaction requires ALL THREE: this flag true, the --live CLI flag, AND a valid KEEPER_PRIVATE_KEY env var whose derived address equals the executor's on-chain keeper(). Leaving this false means --live stays read-only. Never set true unless you intend to send real txs from a dedicated, setKeeper()-authorized keeper wallet.",
@@ -57,7 +57,19 @@
   "_min_profit_usd_help": "Minimum simulated net-after-gas USD required to act on a route. Falls back to min_net_usd if unset. Default 0.50.",
 
   "max_gas_price_gwei": null,
-  "_max_gas_price_help": "Abort a send if the live gas price (gwei) exceeds this cap. null = no cap. PulseChain gwei is large nominally but costs ~\\$0.0015/tx; set a sanity ceiling if you like.",
+  "_max_gas_price_help": "Ceiling for the gas bid. Abort a send if the live base gas price (gwei) exceeds this cap, AND cap the v5.3.0 priority bid (gas_priority_mult) so it can never exceed this value. null = no cap. PulseChain gwei is large nominally but costs ~\\$0.0015/tx; set a sanity ceiling if you like.",
+
+  "gas_priority_mult": 1.25,
+  "_gas_priority_help": "v5.3.0 INCLUSION SPEED: live txs bid this multiple of the live base gas price to land faster and win the inclusion race (we previously arrived ~16 blocks late and the edge was gone). 1.0 = no priority bid; 1.25 = bid 25% over base. The bid is capped at max_gas_price_gwei. On PulseChain even a 1.5x bid costs fractions of a cent.",
+
+  "max_gas_frac_of_edge": 0.5,
+  "_max_gas_frac_help": "v5.3.0 gas-vs-edge safety guard: do NOT fire if the (priority-boosted) estimated gas cost exceeds this fraction of the simulated GROSS edge. 0.5 = never spend more than 50% of the expected profit on gas. Keeps the priority bid from eating the trade. Set 1 to effectively disable.",
+
+  "consecutive_revert_limit": 5,
+  "_consecutive_revert_help": "v5.3.0 circuit breaker: after this many on-chain reverts in a row (consistently losing the inclusion race and burning gas), pause live sending and fall back to sim-only until the keeper is restarted. 0 = disabled. A success resets the streak.",
+
+  "receipt_wait_s": 90,
+  "_receipt_wait_help": "v5.3.0 receipt accounting: how long (seconds) to poll eth_getTransactionReceipt after a live send before logging realized=pending / error=receipt_timeout and re-checking on later cycles. Ensures realized_usd (col19) and error (col20) are never left blank for a live fire.",
 
   "onchain_guard_frac": 0.9,
   "_onchain_guard_help": "On-chain minProfit is set to this fraction of the simulated edge. 0.9 = the tx reverts (losing only gas) unless >=90% of the expected profit still exists at inclusion. This is the core safety guard against the one-block edge closing.",

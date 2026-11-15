@@ -110,11 +110,13 @@ Load it in any spreadsheet or with pandas. The file is gitignored by default —
 
 ---
 
-# Keeper — automatic execution (`keeper.js`, guarded live pilot in v5.2.0)
+# Keeper — automatic execution (`keeper.js`, guarded live pilot + inclusion speed in v5.3.0)
 
 `keeper.js` is a **separate** program from the scanner. Where the scanner alerts you and leaves the trade to you, the keeper watches the chain **per block**, and when a route clears your profit floor it simulates the exact `execute()` call against the live ArbExecutor contract and — only if you have explicitly armed the **guarded live pilot** — sends the transaction.
 
 > **v5.2.0 — guarded live pilot.** The keeper can now send real signed `execute()` transactions, but **only** when three independent switches all line up (see the safety model below). It **defaults OFF** and, with the default config, behaves exactly like the read-only dry keeper. The pilot's purpose is to **measure realized-vs-simulated profit under real mempool competition** (backruns/sandwiches/lost races) — something a dry simulation cannot see — cheaply: PulseChain gas is ~$0.002–0.006 per attempt, so a lost race costs only gas. It is a measurement experiment, not a profit push.
+
+> **v5.3.0 — inclusion speed + receipt accounting.** The first real live fire taught us two things: (1) our bottleneck is **inclusion speed** — the tx was computed at one block but not mined until **16 blocks later**, by which point the edge was gone and the on-chain guard correctly reverted (cost: ~$0.00005 gas, $0 capital); and (2) the keeper **failed to record the revert outcome** back into `keeper_log.csv` (the `realized_usd` and `error` columns were left blank). v5.3.0 fixes both: live txs now **bid priority gas** to land faster (with a gas-vs-edge guard so speed never eats the profit), every live fire now **reliably resolves its receipt** and writes realized P&L + outcome (no more blank columns), and **revert accounting** feeds the daily-loss kill-switch plus a **consecutive-revert circuit breaker** that pauses live firing when we keep losing the race.
 
 The whole design follows from one data finding (26,257 scans over ~9.4 days): profitable windows are rare (~0.23% of scans) and almost always last **exactly one block**. A 30 s scanner sees them after they have already closed. So the keeper reacts within a block and leans on an **on-chain profit guard** so a transaction that lands after the gap closes simply reverts (costing only gas) instead of trading at a loss.
 
@@ -139,12 +141,16 @@ In addition, **`keeper_enabled: true`** remains a hard global send kill switch e
 | `max_position_usd` | **v5.2.0** per-trade notional cap (default $400). Any fire whose optimal-size notional (start-token size × live USD price) exceeds it is skipped. |
 | `max_daily_loss_usd` | **v5.2.0 kill-switch** (default $5.00). Tracks cumulative realized loss for the UTC day — gas spent on reverted/failed txs **plus** any trade that realized below its gas cost. Once crossed, live sending **halts for the rest of the day** (the keeper keeps scanning/simulating/logging). Resets at UTC midnight. |
 | `onchain_guard_frac` | On-chain `minProfit` is set to this fraction of the simulated edge (default 0.9). The tx reverts unless ≥90% of the expected profit still exists at inclusion — the core guard against the one-block edge closing. |
-| `max_gas_price_gwei` | Abort a send if live gas price exceeds this cap (`null` = no cap). |
+| `gas_priority_mult` | **v5.3.0 inclusion speed** — bid this multiple of the live base gas price on live sends to land faster (default 1.25 = +25%). Capped at `max_gas_price_gwei`. 1.0 = no priority bid. |
+| `max_gas_frac_of_edge` | **v5.3.0 gas-vs-edge guard** — never fire if the (priority-boosted) estimated gas cost exceeds this fraction of the simulated **gross** edge (default 0.5 = 50%). Keeps the priority bid from eating the profit. |
+| `consecutive_revert_limit` | **v5.3.0 circuit breaker** — after this many on-chain reverts in a row, pause live sending (sim-only) until restart (default 5; 0 = off). A success resets the streak. |
+| `receipt_wait_s` | **v5.3.0 receipt accounting** — seconds to poll for the tx receipt before logging `realized=pending` / `error=receipt_timeout` and re-checking on later cycles (default 90). |
+| `max_gas_price_gwei` | Ceiling for the gas bid: abort a send if live base gas price exceeds this cap, and cap the priority bid at it (`null` = no cap). |
 | `tx_deadline_s` | Seconds added to `now` for the `execute()` deadline; the tx reverts if not mined in time (default 30). |
 | `max_trades_per_day` | Stop sending after this many trades in a UTC day (default 25). |
 | `keeper_enabled` | Global on/off for all sends. |
 
-Single-flight: only one transaction is ever in flight at a time. Counters reset at UTC midnight.
+Single-flight: only one transaction is ever in flight at a time. Counters reset at UTC midnight (the consecutive-revert streak persists across midnight — a losing streak is a losing streak).
 
 ### How to go live safely
 
@@ -199,8 +205,8 @@ The keeper writes its **own** CSV (`keeper_csv_path`, default `server/keeper_log
 | `sim_net_usd` | Simulated net-after-gas profit in USD (when a candidate cleared the floor and was simulated) |
 | `action` | `skip`, `sim` (simulate-only "would send"), or `live` (a real signed `execute()` tx was broadcast) |
 | `tx_hash` | Transaction hash of the live send (blank otherwise) |
-| `realized_usd` | Realized **net** USD once a live tx is mined — gross profit from the `Executed` event minus gas (negative on an on-chain revert, where only gas is lost) |
-| `error` | Any RPC/encode/send error surfaced for that cycle |
+| `realized_usd` | Realized **net** USD once a live tx is mined — gross profit from the `Executed` event minus the actual gas spent (negative on an on-chain revert, where only gas is lost). **v5.3.0:** always populated for a live fire — the row is deferred until the receipt resolves; `pending` while a receipt is still outstanding (re-checked on later cycles) |
+| `error` | For a live fire (**v5.3.0**): `success` on a mined profitable tx, `reverted_onchain;consec=N` on an on-chain revert (with the consecutive-revert count), or `receipt_timeout` while a receipt is still pending. Otherwise any RPC/encode/send error or guard reason (e.g. `guard:gas_vs_edge`) surfaced for that cycle |
 | `shadow_cs_net_usd` | **v5.1.2** — on-chain `callStatic` net USD at the engine's optimal size (blank when out of band or the shadow call reverted) |
 | `shadow_cs_prof_tok` | **v5.1.2** — raw `callStatic` profit in the start token |
 | `shadow_ratio` | **v5.1.2** — `callStatic` profit ÷ engine profit; **>1 means the engine under-estimated** (if the shadow call reverted, the decoded reason appears here instead) |
@@ -220,9 +226,19 @@ The shadow logger closes that gap. On **every** block, when the best route's eng
 
 The v5.1.2 shadow measures the on-chain result **at the engine's chosen size** — it validates the prediction but does not tell you whether a **larger** trade would net more. v5.1.3 adds that. On the same fire, the keeper runs three more read-only `callStatic`s on the best route at **1.5×, 2× and 4×** the engine's optimal `amountIn`, each built exactly as the executor expects (`packLeg` → `encodeExecute`) but with the on-chain `minProfit` forced to **1** so the guard can never revert the measurement — the call returns the *true* round-trip profit at that size regardless of whether it would clear the live floor. Net USD reuses the engine's gas estimate (gas barely changes with size). The results land in `sweep_1_5x_net_usd` / `sweep_2x_net_usd` / `sweep_4x_net_usd` (empty if that size reverts), with `sweep_best_mult` / `sweep_best_net_usd` naming the winning size (including `1x`, the v5.1.2 shadow at the engine size). It is **SIMULATE-ONLY** — pure `eth_call`s from the owner that can never send — and each sweep leg is isolated in its own `try`/`catch`, so a sweep failure can never break the cycle or the main trade path. At most three extra in-band RPC calls per fire.
 
+### Inclusion speed + receipt accounting (v5.3.0)
+
+The first real live fire (tx on `WPLS>pDAI>WPLS`) was computed at one block but not mined until **16 blocks later**; by then the edge had closed and the on-chain `minProfit` guard correctly reverted it — $0 capital moved, only ~$0.00005 gas lost. The safety worked perfectly, but it exposed two gaps that v5.3.0 closes:
+
+- **Inclusion speed (the real bottleneck).** We arrive late and get beaten to the block. Live txs now bid **priority gas** — `gas_priority_mult` × the live base gas price (default 1.25×), capped at `max_gas_price_gwei` — so the tx is more attractive to validators and lands sooner. On PulseChain this costs fractions of a cent even at 1.5×. A **gas-vs-edge guard** (`max_gas_frac_of_edge`, default 0.5) refuses to fire if the boosted gas would exceed that fraction of the simulated gross edge, so bidding for speed can never eat the profit. The compute→send path is kept tight: the tx is pre-built from the simulated calldata and signed without redundant RPC round-trips.
+
+- **Receipt accounting (the empty-column bug).** Previously the keeper wrote the live row **at send time** with `realized_usd` / `error` blank, then gave up if the receipt didn't arrive within the window — leaving those columns empty forever. Now the row is **deferred until the receipt resolves**: the keeper polls `eth_getTransactionReceipt` for up to `receipt_wait_s` (default 90 s), then writes the full row — on **success**, `realized_usd` = Executed-event gross profit − actual gas (`gasUsed × effectiveGasPrice`), `error` = `success`; on an **on-chain revert**, `realized_usd` = −(gas spent), `error` = `reverted_onchain;consec=N`. If the receipt still hasn't landed, it logs `realized=pending` / `error=receipt_timeout` and **re-checks on every later cycle** (up to 10 minutes), appending a resolution row when it lands — so a live fire is **never** left with blank outcome columns.
+
+- **Revert accounting + circuit breaker.** Every revert's gas cost is added to the `max_daily_loss_usd` tally (so the $5 kill-switch is accurate), and a running **consecutive-revert** counter trips a circuit breaker at `consecutive_revert_limit` (default 5): live sending pauses (the keeper falls back to sim-only, keeps logging, and sends a loud Telegram warning) until it is restarted. A success resets the streak. This stops the keeper from burning gas indefinitely on an inclusion race it keeps losing.
+
 ### Telegram
 
-The keeper reuses the same `telegram_bot_token` / `telegram_chat_id` config, but notifies **only on actual executions** — a success (with tx hash + profit) or a failed send (with the decoded reason). It does not spam you on every simulate.
+The keeper reuses the same `telegram_bot_token` / `telegram_chat_id` config, but notifies **only on actual executions**. **v5.3.0:** the notice now reports the final **outcome** — a `SENT` notice (with the gas bid), then a `SUCCESS` notice (realized net $, gross − gas) or a `REVERTED` notice (gas lost + the consecutive-revert count, plus a `CIRCUIT BREAKER TRIPPED` alert if the streak hits the limit), or a `pending` notice if the receipt is slow. It does not spam you on every simulate.
 
 ### Config
 

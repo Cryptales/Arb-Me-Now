@@ -1,7 +1,23 @@
 #!/usr/bin/env node
 /**
- * Arb-Me-Now v5.2.0 — Keeper (simulate-first, guarded live pilot)
+ * Arb-Me-Now v5.3.0 — Keeper (simulate-first, guarded live pilot + inclusion speed)
  * ════════════════════════════════════════════════════════════════════════════
+ * v5.3.0 "Inclusion Speed + Receipt Accounting":
+ *   • RECEIPT ACCOUNTING: every live fire now reliably resolves its receipt and
+ *     writes realized P&L (col19) + outcome/error (col20) — the row is deferred
+ *     until the receipt lands, so those columns are NEVER left blank. On a
+ *     receipt-wait timeout it logs realized=pending / error=receipt_timeout and
+ *     re-checks on later cycles, appending a resolution row when it lands.
+ *   • INCLUSION SPEED: live txs bid priority gas (gas_priority_mult × base,
+ *     capped at max_gas_price_gwei) to win the inclusion race, with a
+ *     gas-vs-edge guard (max_gas_frac_of_edge) so the priority bid can never eat
+ *     the simulated edge.
+ *   • REVERT ACCOUNTING: gas-only revert losses count toward the daily-loss
+ *     kill-switch, and a consecutive-revert circuit breaker (consecutive_revert_
+ *     limit) pauses live sends (sim-only) when we keep losing the inclusion race.
+ *   • Telegram execution notices report the final OUTCOME (success + realized $,
+ *     or REVERTED + reason + consecutive count), not just "sent".
+ *
  * Reacts PER BLOCK: polls the chain tip, and the instant the block advances it
  * runs the same engine.js scan the browser and scanner use, picks the best
  * net-positive route, ABI-encodes the exact ArbExecutor.execute() call, and
@@ -94,7 +110,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
-const KEEPER_VERSION = 'v5.2.0';
+const KEEPER_VERSION = 'v5.3.0';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -131,6 +147,17 @@ async function main() {
   // Shadow sizing telemetry (v5.1.2): read-only engine-vs-chain capture on the best route.
   const shadowEnabled   = CFG.shadow_enabled !== false;                 // default ON
   const shadowBandUsd   = num(CFG.shadow_band_usd ?? 0.50, 'shadow_band_usd', { min: 0 });
+  // v5.3.0 inclusion speed + receipt accounting:
+  //   gas_priority_mult     — bid this multiple of the live base gas price so the tx lands faster
+  //                           (capped at max_gas_price_gwei). 1.0 = no priority bid.
+  //   max_gas_frac_of_edge  — never fire if the (priority-boosted) gas cost exceeds this fraction
+  //                           of the simulated GROSS edge, so speed never eats the profit.
+  //   consecutive_revert_limit — after this many reverts in a row, pause live sends (sim-only); 0 = off.
+  //   receipt_wait_s        — how long to poll for a tx receipt before logging pending + re-checking.
+  const gasPriorityMult   = num(CFG.gas_priority_mult ?? 1.25, 'gas_priority_mult', { min: 1, max: 5 });
+  const maxGasFracOfEdge  = num(CFG.max_gas_frac_of_edge ?? 0.5, 'max_gas_frac_of_edge', { min: 0, max: 1 });
+  const consecRevertLimit = num(CFG.consecutive_revert_limit ?? 5, 'consecutive_revert_limit', { min: 0, max: 1000 });
+  const receiptWaitS      = num(CFG.receipt_wait_s ?? 90, 'receipt_wait_s', { min: 10, max: 600 });
 
   if (!/^0x[0-9a-fA-F]{40}$/.test(executor)) fail('config: executor_address is not a valid 0x address');
 
@@ -306,6 +333,17 @@ async function main() {
     const d = new Date().toISOString().slice(0, 10);
     if (d !== daily.day) { daily.day = d; daily.trades = 0; daily.lossUsd = 0; console.log(`[${nowIso()}] daily counters reset for ${d}`); }
   }
+  // ─── Revert accounting + circuit breaker (v5.3.0) ───────────────────────────
+  // consecutiveReverts: reverts in a row (reset by a success). When it hits
+  // consecutive_revert_limit the breaker trips (liveSuspended) and live sends pause
+  // — the keeper keeps simulating/logging but stops burning gas on a race it keeps
+  // losing, until the operator restarts. Not reset at UTC midnight (a losing streak
+  // spanning midnight is still a losing streak).
+  let consecutiveReverts = 0;
+  let liveSuspended = false;
+  // Live txs whose receipt didn't land inside receipt_wait_s — re-checked on later
+  // cycles so col19/col20 never stay blank.
+  const pendingTxs = [];
 
   // ─── Route helpers ──────────────────────────────────────────────────────────
   const legsOf = r => (r.kind === 'tri' ? [r.legA, r.legB, r.legC] : [r.legA, r.legB]);
@@ -442,6 +480,7 @@ async function main() {
   // ─── One detect→scan→select→simulate→(send) cycle ──────────────────────────
   async function runCycle(block) {
     rollDay();
+    await resolvePending();   // v5.3.0: resolve any earlier live tx whose receipt timed out
     let scan;
     try { scan = await scanCandidates(); }
     catch (e) {
@@ -591,7 +630,7 @@ async function main() {
       if (busy) { console.log('           → busy with another send; skipping'); break; }
       busy = true;
       try {
-        await sendLive({ b, r, built, simNetUsd, simProfUsd, c });
+        await sendLive({ b, r, built, simNetUsd, simProfUsd, c, wplsPrice: scan.wpls ? scan.wpls.price : null });
         acted = true;
       } catch (e) {
         console.error(`           → send failed: ${e.message}`);
@@ -609,6 +648,7 @@ async function main() {
 
   function checkGuards(gasPrice) {
     if (!keeperEnabled) return 'keeper_enabled=false';
+    if (liveSuspended) return `circuit_breaker:${consecutiveReverts}_consecutive_reverts (live paused — restart to re-arm)`;
     if (daily.trades >= maxTradesPerDay) return `max_trades_per_day (${maxTradesPerDay}) reached`;
     if (daily.lossUsd >= maxDailyLossUsd) return `max_daily_loss_usd (${fmtUsd(maxDailyLossUsd)}) reached`;
     if (maxGasPriceGwei != null && gasPrice != null) {
@@ -618,52 +658,129 @@ async function main() {
     return null;
   }
 
-  // ─── LIVE execution: build, sign, send, await receipt ───────────────────────
-  async function sendLive({ b, r, built, simNetUsd, simProfUsd, c }) {
+  // ─── LIVE execution: build, sign, send (priority gas), resolve receipt ───────
+  // v5.3.0: the CSV row is DEFERRED until the receipt resolves, so realized_usd (col19)
+  // and error (col20) are NEVER left blank. On a receipt-wait timeout we log a
+  // pending/receipt_timeout row and queue the tx for re-checking on later cycles.
+  async function sendLive({ b, r, built, simNetUsd, simProfUsd, c, wplsPrice }) {
     const sk = signer;
-    // nonce (pending), gas price (capped), gas limit (estimate + buffer)
+    // nonce (pending) + base gas price.
     const nonce = BigInt(await rpcOk('eth_getTransactionCount', [sk.address, 'pending']));
-    const gasPrice = BigInt(await rpcOk('eth_gasPrice', []));
-    if (maxGasPriceGwei != null && Number(gasPrice) / 1e9 > maxGasPriceGwei) {
-      throw new Error(`gas price ${(Number(gasPrice) / 1e9).toFixed(2)} gwei exceeds cap ${maxGasPriceGwei}`);
+    const baseGasPrice = BigInt(await rpcOk('eth_gasPrice', []));
+
+    // ── Inclusion-speed priority bid: gas_priority_mult × base, capped at the ceiling. ──
+    let gasPrice = (baseGasPrice * BigInt(Math.round(gasPriorityMult * 1000))) / 1000n;
+    if (maxGasPriceGwei != null) {
+      const capWei = BigInt(Math.round(maxGasPriceGwei * 1e9));
+      if (gasPrice > capWei) gasPrice = capWei;   // never bid above the configured ceiling
     }
-    let gasLimit;
+
+    // Gas limit = estimate + buffer. (eth_estimateGas also re-validates the tx would not revert now.)
     const ge = await rpcRaw('eth_estimateGas', [{ from: sk.address, to: executor, data: built.calldata }]);
     if (ge.error) throw new Error('estimateGas reverted: ' + (ge.error.message || JSON.stringify(ge.error)));
-    gasLimit = (BigInt(ge.result) * BigInt(100 + Math.round(gasLimitBufPct))) / 100n;
+    const gasEst = BigInt(ge.result);
+    const gasLimit = (gasEst * BigInt(100 + Math.round(gasLimitBufPct))) / 100n;
 
-    const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: built.calldata, chainId: CHAIN_ID });
-    const txHash = await rpcOk('eth_sendRawTransaction', [rawTx]);
-    console.log(`           → SENT ${txHash} (nonce ${nonce}, gas ${gasLimit})`);
-    daily.trades++;
-    // action=live: a real signed execute() transaction was broadcast (v5.2.0).
-    logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, '', '']);
-    await notify(`🚀 <b>Keeper SENT (live)</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)}\n<code>${txHash}</code>`);
-
-    // Await receipt
-    const receipt = await waitReceipt(txHash, 60000);
-    if (!receipt) {
-      console.warn('           → receipt not seen within timeout; check explorer');
-      await notify(`⌛ <b>Keeper tx pending</b> (no receipt yet)\n<code>${txHash}</code>`);
+    // ── Gas-vs-edge safety guard: never let the priority bid eat the simulated edge. ──
+    // Compare the (priority-boosted) estimated gas cost against the simulated GROSS edge.
+    const priorityGasUsd = (wplsPrice != null) ? (Number(gasEst * gasPrice) / 1e18) * wplsPrice : null;
+    if (priorityGasUsd != null && simProfUsd != null && simProfUsd > 0
+        && priorityGasUsd > maxGasFracOfEdge * simProfUsd) {
+      console.log(`           → gas-vs-edge guard: priority gas ${fmtUsd(priorityGasUsd)} > ${(maxGasFracOfEdge * 100).toFixed(0)}% of edge ${fmtUsd(simProfUsd)}; NOT sending`);
+      logRow(['ok', simNetUsd.toFixed(4), 'skip', '', '', 'guard:gas_vs_edge']);
       return;
     }
-    const ok = BigInt(receipt.status) === 1n;
-    const gasUsd = c.gasUsd != null ? c.gasUsd : 0;
-    const realizedGross = ok ? decodeRealizedUsd(receipt, c.usdS, dec, sk.keccak) : null;
-    if (ok) {
-      // realized_usd = net on-chain result (gross profit from the Executed event − gas spent).
-      const realizedNet = realizedGross != null ? realizedGross - gasUsd : null;
-      if (realizedNet != null && realizedNet < 0) daily.lossUsd += -realizedNet;  // kill-switch: a trade that realized below its gas cost
-      console.log(`           → SUCCESS ${txHash} realized net ${fmtUsd(realizedNet)} (gross ${fmtUsd(realizedGross)} − gas ${fmtUsd(gasUsd)})`);
-      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, realizedNet != null ? realizedNet.toFixed(4) : '', '']);
-      await notify(`✅ <b>Keeper SUCCESS</b>\n${routeStr(r)}\nrealized net ${fmtUsd(realizedNet)}\n<code>${txHash}</code>`);
-    } else {
-      // reverted on-chain (edge closed by inclusion): lost only gas
-      daily.lossUsd += gasUsd;
-      console.log(`           → REVERTED on-chain ${txHash} (edge closed; lost ~${fmtUsd(gasUsd)} gas)`);
-      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, (-gasUsd).toFixed(4), 'reverted_onchain']);
-      await notify(`❌ <b>Keeper tx reverted</b> (edge closed; only gas lost ~${fmtUsd(gasUsd)})\n<code>${txHash}</code>`);
+
+    const bidGwei = (Number(gasPrice) / 1e9).toFixed(0);
+    const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: built.calldata, chainId: CHAIN_ID });
+    const txHash = await rpcOk('eth_sendRawTransaction', [rawTx]);
+    console.log(`           → SENT ${txHash} (nonce ${nonce}, gas ${gasLimit}, bid ${bidGwei} gwei = ${gasPriorityMult}× base)`);
+    daily.trades++;
+    await notify(`🚀 <b>Keeper SENT (live)</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)} | bid ${bidGwei} gwei (${gasPriorityMult}×)\n<code>${txHash}</code>`);
+
+    // ── Resolve the receipt, THEN write the row (col19/col20 always populated). ──
+    const ctx = { txHash, route: routeStr(r), venues: venuesStr(r), simNetUsd, gasUsdEst: c.gasUsd, wplsPrice, usdS: c.usdS };
+    const receipt = await waitReceipt(txHash, receiptWaitS * 1000);
+    if (!receipt) {
+      console.warn(`           → receipt not seen within ${receiptWaitS}s; logging pending + re-checking on later cycles`);
+      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, 'pending', 'receipt_timeout']);
+      pendingTxs.push({ ...ctx, ts: Date.now() });
+      await notify(`⌛ <b>Keeper tx pending</b> (no receipt in ${receiptWaitS}s; re-checking)\n<code>${txHash}</code>`);
+      return;
     }
+    await resolveReceipt(receipt, ctx);
+  }
+
+  // Compute the ACTUAL gas cost (USD) from a receipt (gasUsed × effectiveGasPrice),
+  // falling back to the pre-send estimate if the receipt lacks effectiveGasPrice.
+  function gasCostUsdFromReceipt(receipt, wplsPrice, gasUsdEst) {
+    try {
+      const gasUsed = BigInt(receipt.gasUsed);
+      const gp = receipt.effectiveGasPrice ? BigInt(receipt.effectiveGasPrice) : null;
+      if (gp != null && wplsPrice != null) return (Number(gasUsed * gp) / 1e18) * wplsPrice;
+    } catch (e) { /* fall through to estimate */ }
+    return gasUsdEst != null ? gasUsdEst : 0;
+  }
+
+  // Resolve a receipt into realized P&L + outcome, write the CSV row, feed the
+  // guardrails (daily loss + consecutive-revert circuit breaker) and notify.
+  async function resolveReceipt(receipt, ctx) {
+    const { txHash, route, simNetUsd, gasUsdEst, wplsPrice, usdS } = ctx;
+    const simNetStr = simNetUsd != null ? Number(simNetUsd).toFixed(4) : '';
+    const ok = BigInt(receipt.status) === 1n;
+    const gasUsd = gasCostUsdFromReceipt(receipt, wplsPrice, gasUsdEst);
+    const kc = signer && signer.keccak;
+
+    if (ok) {
+      consecutiveReverts = 0;   // a win clears the losing streak
+      // realized_usd = net on-chain result (Executed-event gross profit − actual gas spent).
+      const realizedGross = decodeRealizedUsd(receipt, usdS, dec, kc);
+      const realizedNet = realizedGross != null ? realizedGross - gasUsd : null;
+      if (realizedNet != null && realizedNet < 0) daily.lossUsd += -realizedNet;  // a trade that realized below its gas cost
+      console.log(`           → SUCCESS ${txHash} realized net ${fmtUsd(realizedNet)} (gross ${fmtUsd(realizedGross)} − gas ${fmtUsd(gasUsd)})`);
+      logRow(['ok', simNetStr, 'live', txHash, realizedNet != null ? realizedNet.toFixed(4) : '', 'success']);
+      await notify(`✅ <b>Keeper SUCCESS</b>\n${route}\nrealized net ${fmtUsd(realizedNet)} (gross ${fmtUsd(realizedGross)} − gas ${fmtUsd(gasUsd)})\n<code>${txHash}</code>`);
+      return;
+    }
+
+    // Reverted on-chain (edge closed before inclusion): lost only gas. Count it toward the
+    // daily-loss kill-switch and the consecutive-revert circuit breaker.
+    daily.lossUsd += gasUsd;
+    consecutiveReverts++;
+    console.log(`           → REVERTED on-chain ${txHash} (edge closed; lost ~${fmtUsd(gasUsd)} gas) [consec ${consecutiveReverts}/${consecRevertLimit || '∞'}]`);
+    logRow(['ok', simNetStr, 'live', txHash, (-gasUsd).toFixed(4), `reverted_onchain;consec=${consecutiveReverts}`]);
+    let tg = `❌ <b>Keeper tx REVERTED</b> (edge closed; only gas lost ~${fmtUsd(gasUsd)})\nconsecutive reverts ${consecutiveReverts}/${consecRevertLimit || '∞'}\n<code>${txHash}</code>`;
+    if (consecRevertLimit > 0 && consecutiveReverts >= consecRevertLimit && !liveSuspended) {
+      liveSuspended = true;   // trip the breaker → checkGuards pauses all further live sends
+      console.warn(`           ⛔ CIRCUIT BREAKER: ${consecutiveReverts} consecutive reverts — live sends PAUSED (sim-only) until restart.`);
+      tg += `\n⛔ <b>CIRCUIT BREAKER TRIPPED</b> — ${consecutiveReverts} reverts in a row. Live sends paused (sim-only) until restart.`;
+    }
+    await notify(tg);
+  }
+
+  // Re-check live txs whose receipt timed out earlier; resolve + log when they land,
+  // give up (and log a final pending row) after 10 minutes so nothing stays blank.
+  async function resolvePending() {
+    if (!pendingTxs.length) return;
+    const keep = [];
+    for (const p of pendingTxs) {
+      let receipt = null;
+      try {
+        const j = await rpcRaw('eth_getTransactionReceipt', [p.txHash]);
+        if (!j.error && j.result) receipt = j.result;
+      } catch (e) { /* transient — try again next cycle */ }
+      if (receipt) {
+        console.log(`[${nowIso()}] resolving earlier pending live tx ${p.txHash}`);
+        await resolveReceipt(receipt, p);
+      } else if (Date.now() - p.ts < 10 * 60 * 1000) {
+        keep.push(p);
+      } else {
+        console.warn(`[${nowIso()}] giving up on pending tx ${p.txHash} after 10 min (still no receipt)`);
+        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'pending', 'receipt_timeout_final']);
+      }
+    }
+    pendingTxs.length = 0;
+    pendingTxs.push(...keep);
   }
 
   async function waitReceipt(txHash, timeoutMs) {
@@ -702,6 +819,7 @@ async function main() {
   console.log(`  Start token : ${startToken}  |  ref size: ${amountInHuman}  |  V3 depth: ${v3Depth}  |  triangular: ${doTriangular}`);
   console.log(`  Min profit  : ${fmtUsd(minProfitUsd)} net after gas  |  on-chain guard: ${(onchainGuardFrac * 100).toFixed(0)}% of edge`);
   console.log(`  Guards      : maxPos ${fmtUsd(maxPositionUsd)} | maxGas ${maxGasPriceGwei == null ? 'none' : maxGasPriceGwei + ' gwei'} | maxTrades/day ${maxTradesPerDay} | maxLoss/day ${fmtUsd(maxDailyLossUsd)} (kill-switch) | enabled ${keeperEnabled}`);
+  console.log(`  Inclusion   : priority ${gasPriorityMult}× base gas | gas≤${(maxGasFracOfEdge * 100).toFixed(0)}% of edge | circuit-break after ${consecRevertLimit || '∞'} consecutive reverts | receipt wait ${receiptWaitS}s`);
   console.log(`  Poll        : ${pollIntervalMs}ms  |  RPC: ${rpcUrls[0]}${rpcUrls.length > 1 ? ' (+' + (rpcUrls.length - 1) + ' fallback)' : ''}`);
   console.log(`  CSV         : ${CSV_PATH}`);
   console.log(`  Telegram    : ${tgReady ? 'configured (execution notices)' : 'not configured (execution notices disabled)'}`);
