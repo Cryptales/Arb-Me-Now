@@ -1,7 +1,29 @@
 #!/usr/bin/env node
 /**
- * Arb-Me-Now v5.3.0 — Keeper (simulate-first, guarded live pilot + inclusion speed)
+ * Arb-Me-Now v5.4.0 — Keeper (simulate-first, guarded live pilot + MEV protection)
  * ════════════════════════════════════════════════════════════════════════════
+ * v5.4.0 "MEV Protection — private/bundle submission":
+ *   • SUBMISSION LAYER: configurable submission_mode routes the signed live tx by
+ *     one of three paths — "public" (eth_sendRawTransaction to the public RPC,
+ *     the pre-v5.4.0 behavior), "private" (eth_sendRawTransaction to the
+ *     BlockFerret private RPC https://rpc.blockferret.win, held OUT of the public
+ *     mempool so our arb tx can't be front-run), or "bundle" (atomic
+ *     eth_sendBundle to https://rpc.blockferret.win/builders). DEFAULT = private.
+ *   • WHY: two real live fires both reverted despite fat sims — even landing in 2
+ *     blocks the edge was gone, because our profitable tx was visible in the
+ *     public mempool and picked off. Private submission removes that exposure.
+ *   • BUNDLE is SCAFFOLDED (not enabled): BlockFerret's /builders path needs a
+ *     signed identity AND a SearcherPaymentRouter payment the current ArbExecutor
+ *     does not make, so bundle mode falls back to PRIVATE with a clear warning
+ *     rather than ship an unverified path. Identity key (when enabled) is env-only
+ *     (FLASHBOTS_IDENTITY_KEY) — never hardcoded, logged or committed.
+ *   • TIGHT DEADLINE: private/bundle use private_tx_deadline_s so a non-included
+ *     tx EXPIRES HARMLESSLY (on-chain deadline reverts a stale landing) instead of
+ *     trading late — private inclusion is not every-block, so we'd rather miss a
+ *     fire than land one that's already front-run.
+ *   • All v5.3.0 receipt accounting / realized-P&L logging and EVERY guardrail
+ *     stay intact for all modes; the banner + Telegram notices show the mode.
+ *
  * v5.3.0 "Inclusion Speed + Receipt Accounting":
  *   • RECEIPT ACCOUNTING: every live fire now reliably resolves its receipt and
  *     writes realized P&L (col19) + outcome/error (col20) — the row is deferred
@@ -110,7 +132,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
-const KEEPER_VERSION = 'v5.3.0';
+const KEEPER_VERSION = 'v5.4.0';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -158,6 +180,44 @@ async function main() {
   const maxGasFracOfEdge  = num(CFG.max_gas_frac_of_edge ?? 0.5, 'max_gas_frac_of_edge', { min: 0, max: 1 });
   const consecRevertLimit = num(CFG.consecutive_revert_limit ?? 5, 'consecutive_revert_limit', { min: 0, max: 1000 });
   const receiptWaitS      = num(CFG.receipt_wait_s ?? 90, 'receipt_wait_s', { min: 10, max: 600 });
+
+  // v5.4.0 MEV protection — configurable submission layer:
+  //   submission_mode       — "public"  : eth_sendRawTransaction to the public rpc_url (pre-v5.4.0 behavior).
+  //                           "private" : eth_sendRawTransaction to the BlockFerret private RPC — held OUT
+  //                                       of the public mempool so the arb tx can't be front-run. DEFAULT.
+  //                           "bundle"  : atomic eth_sendBundle to the BlockFerret /builders endpoint.
+  //                                       SCAFFOLDED (needs a signed identity + a SearcherPaymentRouter
+  //                                       payment the current ArbExecutor does not make) → falls back to private.
+  //   private_rpc_url       — endpoint for private single-tx submission (BlockFerret).
+  //   bundle_rpc_url        — endpoint for atomic bundle submission (BlockFerret /builders).
+  //   private_tx_deadline_s — on-chain execute() deadline used in private/bundle mode. Kept tight so a
+  //                           non-included tx EXPIRES HARMLESSLY instead of landing stale (private inclusion
+  //                           is NOT every-block). Public mode keeps using tx_deadline_s.
+  const SUB_MODES = ['public', 'private', 'bundle'];
+  let submissionMode    = String(CFG.submission_mode || 'private').toLowerCase();
+  if (!SUB_MODES.includes(submissionMode)) {
+    console.warn(`⚠ unknown submission_mode "${CFG.submission_mode}" — defaulting to "private".`);
+    submissionMode = 'private';
+  }
+  const privateRpcUrl   = CFG.private_rpc_url || 'https://rpc.blockferret.win';
+  const bundleRpcUrl    = CFG.bundle_rpc_url  || 'https://rpc.blockferret.win/builders';
+  const privateTxDeadlineS = num(CFG.private_tx_deadline_s ?? 30, 'private_tx_deadline_s', { min: 5, max: 1800 });
+  // The deadline baked into the execute() calldata depends on the active mode.
+  const effectiveDeadlineS = (submissionMode === 'public') ? txDeadlineS : privateTxDeadlineS;
+
+  // Resolve the EFFECTIVE submission mode (bundle is not shippable yet → private fallback).
+  // Bundle needs: (1) a signed identity (FLASHBOTS_IDENTITY_KEY, env-only) AND (2) a
+  // SearcherPaymentRouter payment that our single arb tx does not make. We refuse to ship an
+  // unverified bundle path, so bundle ALWAYS falls back to private (which already defeats
+  // front-running). The scaffold (buildBundleRequest/signBundleIdentity) stays for the next step.
+  let effectiveMode = submissionMode;
+  if (submissionMode === 'bundle') {
+    const haveIdentity = !!process.env.FLASHBOTS_IDENTITY_KEY;
+    console.warn('⚠ submission_mode="bundle" is SCAFFOLDED, not enabled: eth_sendBundle to ' + bundleRpcUrl +
+      ' requires a signed identity' + (haveIdentity ? '' : ' (FLASHBOTS_IDENTITY_KEY absent)') +
+      ' AND a SearcherPaymentRouter payment the current ArbExecutor does not make. Falling back to PRIVATE (still out of the public mempool).');
+    effectiveMode = 'private';
+  }
 
   if (!/^0x[0-9a-fA-F]{40}$/.test(executor)) fail('config: executor_address is not a valid 0x address');
 
@@ -220,6 +280,79 @@ async function main() {
     return j.result;
   }
   const getBlockNumber = async () => parseInt(await rpcOk('eth_blockNumber', []), 16);
+
+  // ─── v5.4.0 submission layer: route the signed raw tx by effectiveMode ───────
+  // Single-URL JSON-RPC POST with the same timeout discipline as rpcRaw (no multi-URL
+  // fallback — a private submission must go ONLY to the private endpoint, never leak
+  // to the public mempool as a "fallback"). Returns the parsed JSON (caller checks .error).
+  async function postJsonRpc(url, method, params, extraHeaders) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), RPC_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, extraHeaders || {}),
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Submit a signed raw tx by the active submission mode. Returns the tx hash.
+  //   public  → eth_sendRawTransaction to the public rpc (with retry/fallback).
+  //   private → eth_sendRawTransaction to the BlockFerret private RPC (single endpoint,
+  //             no public leak). The tx is held private until a cooperating builder
+  //             includes it; it still lands on-chain with a normal receipt when included.
+  //   bundle  → never reached (resolved to private at startup). Hard guard below.
+  async function submitTx(rawTx) {
+    if (effectiveMode === 'public') {
+      return await rpcOk('eth_sendRawTransaction', [rawTx]);
+    }
+    if (effectiveMode === 'private') {
+      const j = await postJsonRpc(privateRpcUrl, 'eth_sendRawTransaction', [rawTx]);
+      if (j.error) throw new Error('private RPC (' + privateRpcUrl + '): ' + (j.error.message || JSON.stringify(j.error)));
+      return j.result;
+    }
+    // effectiveMode === 'bundle' should be impossible (startup falls back to private).
+    throw new Error('bundle submission is scaffolded, not enabled — see submission_mode docs');
+  }
+
+  // ─── Bundle scaffold (NOT ENABLED) ──────────────────────────────────────────
+  // Builds the eth_sendBundle request for BlockFerret's /builders endpoint and the
+  // signed-identity auth header. It is intentionally NOT wired in: BlockFerret bundles
+  // require (a) this signed identity AND (b) an on-chain SearcherPaymentRouter payment
+  // (pay(bytes32,uint256,bytes32,address), split 60% validator / 40% builder) that our
+  // single self-contained arb tx does NOT currently make — so a bundle would be rejected
+  // or waste the attempt. Enabling bundle mode is the next step and needs a contract that
+  // calls the payment router (or a second funded payment tx in the bundle). Kept here, with
+  // a hard guard, so that work has a verified starting point. Identity key is env-only.
+  function signBundleIdentity(bodyJson) {
+    const idKeyHex = process.env.FLASHBOTS_IDENTITY_KEY;   // env-only; never logged/committed
+    if (!idKeyHex) throw new Error('FLASHBOTS_IDENTITY_KEY not set (required for bundle identity signing)');
+    if (!signer || !signer._secp || !signer.keccak) throw new Error('signer crypto unavailable for identity signing');
+    // Flashbots-style scheme: sign the keccak256 of the JSON body; header is "<addr>:0x<sig>".
+    const pk = Buffer.from(idKeyHex.replace(/^0x/, ''), 'hex');
+    const msgHash = signer.keccak(Buffer.from(bodyJson, 'utf8'));
+    const pub = signer._secp.getPublicKey(pk, false);
+    const idAddr = '0x' + Buffer.from(signer.keccak(pub.slice(1))).slice(-20).toString('hex');
+    const sig = signer._secp.sign(msgHash, pk);
+    const sigHex = '0x' + sig.toCompactHex() + (sig.recovery).toString(16).padStart(2, '0');
+    return { header: `${idAddr}:${sigHex}`, idAddr };
+  }
+  function buildBundleRequest(rawTx, targetBlockHex) {
+    // eth_sendBundle params: [{ txs: [rawTx...], blockNumber }]. Atomic: all-or-nothing.
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_sendBundle',
+      params: [{ txs: [rawTx], blockNumber: targetBlockHex }] });
+    const { header } = signBundleIdentity(body);
+    return { url: bundleRpcUrl, body, headers: { 'Content-Type': 'application/json', 'X-Flashbots-Signature': header } };
+  }
+  // Keep the scaffold referenced so linters/bundlers don't drop it before it's wired in.
+  void buildBundleRequest;
 
   // ─── Live signer setup + on-chain keeper() verification (v5.2.0) ────────────
   // Only reached when BOTH config.live_enabled AND the --live flag are set. The key
@@ -455,7 +588,7 @@ async function main() {
     // On-chain floor: require >= onchainGuardFrac of the expected edge to survive to inclusion.
     let minProfit = (r.opt.profit * BigInt(Math.round(onchainGuardFrac * 1e6))) / 1000000n;
     if (minProfit < 1n) minProfit = 1n;
-    const deadline = BigInt(Math.floor(Date.now() / 1000) + Math.round(txDeadlineS));
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + Math.round(effectiveDeadlineS));
     const calldata = E.encodeExecute(packed, amountIn, minProfit, deadline);
     return { calldata, amountIn, minProfit, deadline };
   }
@@ -527,7 +660,7 @@ async function main() {
           try {
             const scaledAmountIn = (r.opt.amountIn * BigInt(Math.round(mult * 1000))) / 1000n;
             const packed = legsOf(r).map(E.packLeg);
-            const deadline = BigInt(Math.floor(Date.now() / 1000) + Math.round(txDeadlineS));
+            const deadline = BigInt(Math.floor(Date.now() / 1000) + Math.round(effectiveDeadlineS));
             const calldata = E.encodeExecute(packed, scaledAmountIn, 1n, deadline);
             const sim = await E.simulateExecute(executor, calldata);
             if (sim.ok) {
@@ -693,19 +826,23 @@ async function main() {
 
     const bidGwei = (Number(gasPrice) / 1e9).toFixed(0);
     const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: built.calldata, chainId: CHAIN_ID });
-    const txHash = await rpcOk('eth_sendRawTransaction', [rawTx]);
-    console.log(`           → SENT ${txHash} (nonce ${nonce}, gas ${gasLimit}, bid ${bidGwei} gwei = ${gasPriorityMult}× base)`);
+    // v5.4.0: route the signed tx by submission mode (public mempool / private RPC).
+    const modeLabel = effectiveMode === 'private' ? `private (${privateRpcUrl})` : 'public';
+    const txHash = await submitTx(rawTx);
+    console.log(`           → SENT ${txHash} via ${modeLabel} (nonce ${nonce}, gas ${gasLimit}, bid ${bidGwei} gwei = ${gasPriorityMult}× base)`);
     daily.trades++;
-    await notify(`🚀 <b>Keeper SENT (live)</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)} | bid ${bidGwei} gwei (${gasPriorityMult}×)\n<code>${txHash}</code>`);
+    await notify(`🚀 <b>Keeper SENT (live, ${effectiveMode})</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)} | bid ${bidGwei} gwei (${gasPriorityMult}×)${effectiveMode !== 'public' ? '\n🔒 out of public mempool' : ''}\n<code>${txHash}</code>`);
 
     // ── Resolve the receipt, THEN write the row (col19/col20 always populated). ──
-    const ctx = { txHash, route: routeStr(r), venues: venuesStr(r), simNetUsd, gasUsdEst: c.gasUsd, wplsPrice, usdS: c.usdS };
+    // deadline (unix s) is carried so a non-included private/bundle tx can be marked
+    // EXPIRED harmlessly once its on-chain deadline has passed with no receipt.
+    const ctx = { txHash, route: routeStr(r), venues: venuesStr(r), simNetUsd, gasUsdEst: c.gasUsd, wplsPrice, usdS: c.usdS, mode: effectiveMode, deadline: built.deadline };
     const receipt = await waitReceipt(txHash, receiptWaitS * 1000);
     if (!receipt) {
       console.warn(`           → receipt not seen within ${receiptWaitS}s; logging pending + re-checking on later cycles`);
-      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, 'pending', 'receipt_timeout']);
+      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, 'pending', `receipt_timeout;${effectiveMode}`]);
       pendingTxs.push({ ...ctx, ts: Date.now() });
-      await notify(`⌛ <b>Keeper tx pending</b> (no receipt in ${receiptWaitS}s; re-checking)\n<code>${txHash}</code>`);
+      await notify(`⌛ <b>Keeper tx pending</b> (no receipt in ${receiptWaitS}s via ${effectiveMode}; re-checking)\n<code>${txHash}</code>`);
       return;
     }
     await resolveReceipt(receipt, ctx);
@@ -769,14 +906,23 @@ async function main() {
         const j = await rpcRaw('eth_getTransactionReceipt', [p.txHash]);
         if (!j.error && j.result) receipt = j.result;
       } catch (e) { /* transient — try again next cycle */ }
+      // For private/bundle: once the on-chain deadline has passed with no receipt, the tx
+      // can no longer be included profitably (a late landing reverts on the expired
+      // deadline). Treat it as EXPIRED harmlessly — never mined → no gas, no capital.
+      const deadlinePassed = p.deadline != null && (Date.now() / 1000) > (Number(p.deadline) + 30);
+      const privateMode = p.mode && p.mode !== 'public';
       if (receipt) {
         console.log(`[${nowIso()}] resolving earlier pending live tx ${p.txHash}`);
         await resolveReceipt(receipt, p);
+      } else if (privateMode && deadlinePassed) {
+        console.warn(`[${nowIso()}] private/${p.mode} tx ${p.txHash} expired (deadline passed, never included) — harmless, no gas/capital lost`);
+        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'expired', `expired_not_included;${p.mode}`]);
+        await notify(`⏱ <b>Keeper tx EXPIRED</b> (not included before deadline via ${p.mode}; no gas/capital lost)\n<code>${p.txHash}</code>`);
       } else if (Date.now() - p.ts < 10 * 60 * 1000) {
         keep.push(p);
       } else {
         console.warn(`[${nowIso()}] giving up on pending tx ${p.txHash} after 10 min (still no receipt)`);
-        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'pending', 'receipt_timeout_final']);
+        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'pending', `receipt_timeout_final${p.mode ? ';' + p.mode : ''}`]);
       }
     }
     pendingTxs.length = 0;
@@ -820,6 +966,14 @@ async function main() {
   console.log(`  Min profit  : ${fmtUsd(minProfitUsd)} net after gas  |  on-chain guard: ${(onchainGuardFrac * 100).toFixed(0)}% of edge`);
   console.log(`  Guards      : maxPos ${fmtUsd(maxPositionUsd)} | maxGas ${maxGasPriceGwei == null ? 'none' : maxGasPriceGwei + ' gwei'} | maxTrades/day ${maxTradesPerDay} | maxLoss/day ${fmtUsd(maxDailyLossUsd)} (kill-switch) | enabled ${keeperEnabled}`);
   console.log(`  Inclusion   : priority ${gasPriorityMult}× base gas | gas≤${(maxGasFracOfEdge * 100).toFixed(0)}% of edge | circuit-break after ${consecRevertLimit || '∞'} consecutive reverts | receipt wait ${receiptWaitS}s`);
+  if (effectiveMode === 'private') {
+    console.log(`  Submission  : 🔒 PRIVATE (${privateRpcUrl}) — out of public mempool, anti-front-run | tx deadline +${effectiveDeadlineS}s (non-included expires harmlessly)`);
+  } else {
+    console.log(`  Submission  : 🌐 PUBLIC (${rpcUrls[0]}) — broadcast to public mempool | tx deadline +${effectiveDeadlineS}s`);
+  }
+  if (submissionMode === 'bundle') {
+    console.log(`  ⚠ submission_mode="bundle" requested but SCAFFOLDED only — fell back to PRIVATE (eth_sendBundle needs signed identity + SearcherPaymentRouter payment; see bundle_rpc_url=${bundleRpcUrl}).`);
+  }
   console.log(`  Poll        : ${pollIntervalMs}ms  |  RPC: ${rpcUrls[0]}${rpcUrls.length > 1 ? ' (+' + (rpcUrls.length - 1) + ' fallback)' : ''}`);
   console.log(`  CSV         : ${CSV_PATH}`);
   console.log(`  Telegram    : ${tgReady ? 'configured (execution notices)' : 'not configured (execution notices disabled)'}`);
@@ -869,7 +1023,7 @@ async function main() {
     const c = { r };
     const built = buildCalldata(c);
     console.log(`  best route by gap: ${routeStr(r)} [${venuesStr(r)}]`);
-    console.log(`  size ${fmtTok(built.amountIn, dec, r.startSym)} | on-chain minProfit ${built.minProfit} | deadline +${txDeadlineS}s`);
+    console.log(`  size ${fmtTok(built.amountIn, dec, r.startSym)} | on-chain minProfit ${built.minProfit} | deadline +${effectiveDeadlineS}s`);
     console.log(`  calldata ${built.calldata.slice(0, 20)}… (${(built.calldata.length - 2) / 2} bytes), selector ${built.calldata.slice(0, 10)}`);
     const sim = await simulate(c, built);
     const maskAddr = a => (typeof a === 'string' && a.length >= 10) ? a.slice(0, 6) + '…' + a.slice(-4) : '?';

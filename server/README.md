@@ -110,13 +110,15 @@ Load it in any spreadsheet or with pandas. The file is gitignored by default —
 
 ---
 
-# Keeper — automatic execution (`keeper.js`, guarded live pilot + inclusion speed in v5.3.0)
+# Keeper — automatic execution (`keeper.js`, guarded live pilot + inclusion speed + MEV protection in v5.4.0)
 
 `keeper.js` is a **separate** program from the scanner. Where the scanner alerts you and leaves the trade to you, the keeper watches the chain **per block**, and when a route clears your profit floor it simulates the exact `execute()` call against the live ArbExecutor contract and — only if you have explicitly armed the **guarded live pilot** — sends the transaction.
 
 > **v5.2.0 — guarded live pilot.** The keeper can now send real signed `execute()` transactions, but **only** when three independent switches all line up (see the safety model below). It **defaults OFF** and, with the default config, behaves exactly like the read-only dry keeper. The pilot's purpose is to **measure realized-vs-simulated profit under real mempool competition** (backruns/sandwiches/lost races) — something a dry simulation cannot see — cheaply: PulseChain gas is ~$0.002–0.006 per attempt, so a lost race costs only gas. It is a measurement experiment, not a profit push.
 
 > **v5.3.0 — inclusion speed + receipt accounting.** The first real live fire taught us two things: (1) our bottleneck is **inclusion speed** — the tx was computed at one block but not mined until **16 blocks later**, by which point the edge was gone and the on-chain guard correctly reverted (cost: ~$0.00005 gas, $0 capital); and (2) the keeper **failed to record the revert outcome** back into `keeper_log.csv` (the `realized_usd` and `error` columns were left blank). v5.3.0 fixes both: live txs now **bid priority gas** to land faster (with a gas-vs-edge guard so speed never eats the profit), every live fire now **reliably resolves its receipt** and writes realized P&L + outcome (no more blank columns), and **revert accounting** feeds the daily-loss kill-switch plus a **consecutive-revert circuit breaker** that pauses live firing when we keep losing the race.
+
+> **v5.4.0 — MEV protection (private / bundled submission).** The priority-gas upgrade worked: the second live fire landed only **2 blocks late** (down from 16) — and **still reverted** despite a +$2.66 sim, this time after burning 218,843 gas fighting deep into the swaps before the on-chain `minProfit` guard caught it (realized −$0.0018, gas only). The lesson: **speed is no longer the bottleneck — public-mempool MEV is.** Our profitable `execute()` tx is visible in the public mempool the instant we broadcast it, and a faster/atomic competitor takes the edge before our swaps settle. v5.4.0 adds a configurable **submission layer** so the trade isn't broadcast to the whole world first. See **§ MEV protection — private / bundled submission** below.
 
 The whole design follows from one data finding (26,257 scans over ~9.4 days): profitable windows are rare (~0.23% of scans) and almost always last **exactly one block**. A 30 s scanner sees them after they have already closed. So the keeper reacts within a block and leans on an **on-chain profit guard** so a transaction that lands after the gap closes simply reverts (costing only gas) instead of trading at a loss.
 
@@ -146,7 +148,11 @@ In addition, **`keeper_enabled: true`** remains a hard global send kill switch e
 | `consecutive_revert_limit` | **v5.3.0 circuit breaker** — after this many on-chain reverts in a row, pause live sending (sim-only) until restart (default 5; 0 = off). A success resets the streak. |
 | `receipt_wait_s` | **v5.3.0 receipt accounting** — seconds to poll for the tx receipt before logging `realized=pending` / `error=receipt_timeout` and re-checking on later cycles (default 90). |
 | `max_gas_price_gwei` | Ceiling for the gas bid: abort a send if live base gas price exceeds this cap, and cap the priority bid at it (`null` = no cap). |
-| `tx_deadline_s` | Seconds added to `now` for the `execute()` deadline; the tx reverts if not mined in time (default 30). |
+| `tx_deadline_s` | Seconds added to `now` for the `execute()` deadline in **public** mode; the tx reverts if not mined in time (default 30). |
+| `submission_mode` | **v5.4.0 MEV protection** — `private` (default), `public`, or `bundle`. See § below. |
+| `private_rpc_url` | **v5.4.0** — BlockFerret private RPC for `private` mode (default `https://rpc.blockferret.win`). |
+| `bundle_rpc_url` | **v5.4.0** — BlockFerret bundle endpoint for the scaffolded `bundle` mode (default `https://rpc.blockferret.win/builders`). |
+| `private_tx_deadline_s` | **v5.4.0** — tight `execute()` deadline for `private`/`bundle` sends so a non-included tx expires harmlessly (default 30, range 5–1800). |
 | `max_trades_per_day` | Stop sending after this many trades in a UTC day (default 25). |
 | `keeper_enabled` | Global on/off for all sends. |
 
@@ -236,9 +242,28 @@ The first real live fire (tx on `WPLS>pDAI>WPLS`) was computed at one block but 
 
 - **Revert accounting + circuit breaker.** Every revert's gas cost is added to the `max_daily_loss_usd` tally (so the $5 kill-switch is accurate), and a running **consecutive-revert** counter trips a circuit breaker at `consecutive_revert_limit` (default 5): live sending pauses (the keeper falls back to sim-only, keeps logging, and sends a loud Telegram warning) until it is restarted. A success resets the streak. This stops the keeper from burning gas indefinitely on an inclusion race it keeps losing.
 
+### MEV protection — private / bundled submission (v5.4.0)
+
+The second live fire (`WPLS>WETH>PLSX>WPLS`, sim +$2.66) landed only **2 blocks late** thanks to the v5.3.0 priority bid — yet it **still reverted**, burning 218,843 gas fighting deep into the swaps before the on-chain `minProfit` guard caught it (realized −$0.0018, gas only). Inclusion speed was fixed; the edge still vanished before our swaps settled. The remaining leak is **public-mempool MEV**: the moment we broadcast an `execute()` tx to the public RPC, every searcher can see it and a faster or atomic competitor front-runs the arb. v5.4.0 adds a configurable **submission layer** that controls *how* the signed raw tx reaches the chain.
+
+PulseChain has **no Flashbots service**; the functional equivalent is **[BlockFerret](https://blockferret.win)** (by Switch.win), an ethical "no-sandwich" builder. Three modes, selected by `submission_mode`:
+
+- **`private` (default, recommended).** The signed tx is sent to BlockFerret's private RPC (`private_rpc_url`, default `https://rpc.blockferret.win`) via standard `eth_sendRawTransaction`. It is held in a **private pool and kept OUT of the public mempool** until a BlockFerret-built block includes it — so public-mempool searchers never see it and cannot front-run it. **No auth, no payment, no enrollment** — this is the simplest, lowest-risk win and directly addresses the measured failure. **Fully functional.**
+- **`public`.** The old v5.3.0 behaviour — broadcast to the public RPC (`rpc_urls[0]`) mempool. Widest/fastest inclusion coverage, but fully exposed to front-running. **Fully functional** (kept for comparison / fallback).
+- **`bundle`.** Atomic `eth_sendBundle` to BlockFerret's builder endpoint (`bundle_rpc_url`, default `https://rpc.blockferret.win/builders`). **SCAFFOLDED, not enabled.** The code to build and sign a Flashbots-style bundle request is present (identity key from env `FLASHBOTS_IDENTITY_KEY`, `X-Flashbots-Signature` header), but enabling it safely requires an on-chain **SearcherPaymentRouter** payment (60% validator / 40% builder) that our current ArbExecutor contract does **not** make. Rather than ship a path that would silently fail to land, selecting `bundle` logs a clear warning and **falls back to `private`** at startup. Enabling it is a contract-level change for a later version.
+
+**Honest trade-offs (why `private` is not a free lunch):**
+
+- **Coverage, not every block.** BlockFerret only builds the blocks its validators are scheduled to propose — a **minority of PulseChain blocks** (via the Vouch relay, on the order of ~10%). A private tx therefore may **wait** for a BlockFerret-built block, and ordinary private txs can take **many minutes** on average to include. For a one-block arb edge, that means **many private sends will simply never land** — which is fine, because of the next point.
+- **Tight deadline so a stale tx can't land.** `private`/`bundle` sends use `private_tx_deadline_s` (default **30 s**, deliberately tight) for the on-chain `execute()` deadline instead of `tx_deadline_s`. If the tx isn't included almost immediately, it **expires and reverts (gas only)** rather than landing minutes later after the edge is long gone. The keeper detects this, logs `error=expired_not_included;private`, and moves on.
+- **No automatic fallback to public.** We do **not** silently re-broadcast a non-included private tx to the public mempool — that would re-expose it to the exact front-running we're avoiding. A private tx that misses its window is abandoned (expired), not leaked.
+- **The thesis:** *fewer trades that are never front-run beats many trades that get picked off.* v5.4.0 trades some inclusion coverage for front-run immunity, and every guardrail (on-chain `minProfit`, priority gas bid, gas-vs-edge guard, daily-loss kill-switch, consecutive-revert circuit breaker, receipt accounting) stays fully in force in **all** modes.
+
+> **Not yet exercised against a real on-chain send.** The private submission path is implemented and offline-verified (endpoint routing by mode, banner, deadline, notices), but at the time of this release **no real private tx has been mined** — the operator hot-swaps the live keeper after review. Treat the first few live private fires as the real measurement.
+
 ### Telegram
 
-The keeper reuses the same `telegram_bot_token` / `telegram_chat_id` config, but notifies **only on actual executions**. **v5.3.0:** the notice now reports the final **outcome** — a `SENT` notice (with the gas bid), then a `SUCCESS` notice (realized net $, gross − gas) or a `REVERTED` notice (gas lost + the consecutive-revert count, plus a `CIRCUIT BREAKER TRIPPED` alert if the streak hits the limit), or a `pending` notice if the receipt is slow. It does not spam you on every simulate.
+The keeper reuses the same `telegram_bot_token` / `telegram_chat_id` config, but notifies **only on actual executions**. **v5.3.0:** the notice reports the final **outcome** — a `SENT` notice (with the gas bid), then a `SUCCESS` notice (realized net $, gross − gas) or a `REVERTED` notice (gas lost + the consecutive-revert count, plus a `CIRCUIT BREAKER TRIPPED` alert if the streak hits the limit), or a `pending` notice if the receipt is slow. **v5.4.0:** the `SENT` notice now names the **submission mode** (`private` / `public`) and adds a 🔒 *out of public mempool* tag for private sends, and a non-included private tx emits an `expired` notice. It does not spam you on every simulate.
 
 ### Config
 

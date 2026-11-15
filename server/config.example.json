@@ -39,7 +39,7 @@
   "rpc_urls": ["https://rpc.pulsechain.com"],
   "_rpc_help": "PulseChain RPC endpoint(s). The scanner uses the first; the keeper tries all of them in order with timeout + retry/backoff. Add one or two backups for resilience.",
 
-  "_keeper_section": "─── v5.3 keeper (guarded live pilot + inclusion speed) — read server/README.md before --live ───",
+  "_keeper_section": "─── v5.4 keeper (guarded live pilot + inclusion speed + MEV protection) — read server/README.md before --live ───",
 
   "live_enabled": false,
   "_live_enabled_help": "v5.2.0 GUARDED LIVE PILOT master switch. Default false = the keeper is strictly read-only (simulate-only), exactly like the dry keeper. Sending a real transaction requires ALL THREE: this flag true, the --live CLI flag, AND a valid KEEPER_PRIVATE_KEY env var whose derived address equals the executor's on-chain keeper(). Leaving this false means --live stays read-only. Never set true unless you intend to send real txs from a dedicated, setKeeper()-authorized keeper wallet.",
@@ -70,6 +70,16 @@
 
   "receipt_wait_s": 90,
   "_receipt_wait_help": "v5.3.0 receipt accounting: how long (seconds) to poll eth_getTransactionReceipt after a live send before logging realized=pending / error=receipt_timeout and re-checking on later cycles. Ensures realized_usd (col19) and error (col20) are never left blank for a live fire.",
+
+  "_submission_section": "─── v5.4.0 MEV protection — private/bundle submission (read server/README.md § MEV protection) ───",
+  "submission_mode": "private",
+  "_submission_mode_help": "v5.4.0: how the signed arb tx is submitted. 'private' (DEFAULT, recommended) = send via BlockFerret private RPC so the tx is held in a private pool and kept OUT of the public mempool until included — stops public-mempool front-running / MEV sandwiching, which is now the bottleneck (fat sims still revert because competitors see our tx first). 'public' = broadcast to the public RPC mempool (old v5.3.0 behaviour, fastest/widest coverage but exposed to front-running). 'bundle' = atomic eth_sendBundle; SCAFFOLDED ONLY — needs a signed identity AND a SearcherPaymentRouter payment our ArbExecutor does not make, so it automatically falls back to 'private' at startup with a warning. Unknown values fall back to 'private'.",
+  "private_rpc_url": "https://rpc.blockferret.win",
+  "_private_rpc_url_help": "v5.4.0: BlockFerret private single-tx RPC endpoint (eth_sendRawTransaction, no auth, no payment). Used when submission_mode='private'. Trade-off: private inclusion is not every-block (BlockFerret builds only the blocks its validators propose — roughly a minority of blocks via the Vouch relay, ~11% coverage), so a private tx may wait; the tight private_tx_deadline_s ensures a non-included tx expires harmlessly rather than landing stale. Fewer trades that are never front-run beats many trades picked off.",
+  "bundle_rpc_url": "https://rpc.blockferret.win/builders",
+  "_bundle_rpc_url_help": "v5.4.0: BlockFerret bundle endpoint (eth_sendBundle, atomic). Only consulted if submission_mode='bundle', which is scaffolded and not enabled — the keeper logs a warning and falls back to private. Enabling it would require a signed identity key (env FLASHBOTS_IDENTITY_KEY) plus an on-chain SearcherPaymentRouter payment (60% validator / 40% builder) that the current ArbExecutor contract does not make.",
+  "private_tx_deadline_s": 30,
+  "_private_tx_deadline_help": "v5.4.0: execute() deadline window (seconds from now) used for private/bundle sends, replacing tx_deadline_s in those modes. Deliberately tight so a private tx that is NOT included promptly expires on-chain (reverts, gas only) instead of landing stale after the edge is gone. Range 5–1800; default 30. Public mode keeps using tx_deadline_s.",
 
   "onchain_guard_frac": 0.9,
   "_onchain_guard_help": "On-chain minProfit is set to this fraction of the simulated edge. 0.9 = the tx reverts (losing only gas) unless >=90% of the expected profit still exists at inclusion. This is the core safety guard against the one-block edge closing.",
