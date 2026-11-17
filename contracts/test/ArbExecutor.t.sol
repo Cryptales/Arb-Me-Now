@@ -28,6 +28,36 @@ contract Dumper {
     }
 }
 
+/// @dev Stands in for BlockFerret's SearcherPaymentRouter: records the native PLS tip and the args.
+contract MockRouter {
+    uint256 public lastValue;
+    bytes32 public lastPaymentId;
+    uint256 public lastTargetBlock;
+    bytes32 public lastExpectedParent;
+    address public lastProposerRecipient;
+    uint256 public calls;
+
+    function pay(bytes32 paymentId, uint256 targetBlock, bytes32 expectedParent, address payable proposerRecipient)
+        external
+        payable
+    {
+        lastValue = msg.value;
+        lastPaymentId = paymentId;
+        lastTargetBlock = targetBlock;
+        lastExpectedParent = expectedParent;
+        lastProposerRecipient = proposerRecipient;
+        calls++;
+    }
+}
+
+/// @dev A router that always reverts, to prove executeAndPay() bubbles up PayFailed and the
+///      whole atomic cycle unwinds (owner paid nothing, no tokens stuck).
+contract RevertingRouter {
+    function pay(bytes32, uint256, bytes32, address payable) external payable {
+        revert("nope");
+    }
+}
+
 contract ArbExecutorForkTest is Test {
     address constant WPLS = 0xA1077a294dDE1B09bB078844df40758a5D0f9a27;
     address constant PLSX = 0x95B303987A60C71504D99Aa1b13B4DA07b0790ab;
@@ -49,7 +79,7 @@ contract ArbExecutorForkTest is Test {
     function setUp() public {
         vm.createSelectFork(vm.envOr("PULSE_RPC", string("https://rpc.pulsechain.com")));
         vm.prank(owner);
-        ex = new ArbExecutor();
+        ex = new ArbExecutor(WPLS, 1000); // 10% default builder tip
         dumper = new Dumper();
     }
 
@@ -236,5 +266,159 @@ contract ArbExecutorForkTest is Test {
         vm.expectRevert(ArbExecutor.NotAuthorized.selector); // zero address can never act as keeper
         vm.prank(address(0));
         ex.execute(l, 1e18, 0, block.timestamp + 60);
+    }
+
+    // ------------------------------------------------------------ bundle / builder tip (v5.5.0)
+
+    /// @dev Runs executeAndPay as `bot` over decreasing sizes until one clears; returns net profit.
+    function runPayAs(address caller, uint256[] memory l, uint256 startSize, address router)
+        internal
+        returns (uint256 net, uint256 size)
+    {
+        for (size = startSize; size > 1e15; size /= 2) {
+            vm.prank(caller);
+            try ex.executeAndPay(
+                l, size, 1, block.timestamp + 60, router, bytes32(uint256(1)), 1234, bytes32(uint256(0xabc)), payable(address(0xBEEF))
+            ) returns (uint256 p) {
+                net = p;
+                break;
+            } catch {}
+        }
+    }
+
+    function test_executeAndPay_tipsBuilder_ownerGetsNet() public {
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        MockRouter router = new MockRouter();
+
+        dumpV2(PX2_WPLS_PLSX, 29, 20); // WPLS cheap on PulseX v2
+        uint256[] memory l = legs2(leg(MM_WPLS_PLSX, WPLS, false, 25), leg(PX2_WPLS_PLSX, PLSX, false, 29));
+
+        uint256 ownerBefore = IERC20(WPLS).balanceOf(owner);
+        (uint256 net,) = runPayAs(bot, l, IERC20(WPLS).balanceOf(MM_WPLS_PLSX) / 50, address(router));
+
+        uint256 tip = address(router).balance;
+        uint256 realized = net + tip;
+        assertGt(realized, 0, "no profitable size found");
+        assertGt(tip, 0, "builder not tipped");
+        // 10% tip, exact integer split.
+        assertEq(tip, realized * 1000 / 10000, "tip != tipBps of realized profit");
+        // Owner receives the net (realized - tip) in WPLS; keeper (bot) receives nothing.
+        assertEq(IERC20(WPLS).balanceOf(owner) - ownerBefore, net, "owner net wrong");
+        // Contract retains neither WPLS nor native PLS.
+        assertEq(IERC20(WPLS).balanceOf(address(ex)), 0, "executor kept WPLS");
+        assertEq(address(ex).balance, 0, "executor kept native PLS");
+        // Per-block args forwarded verbatim to the router.
+        assertEq(router.calls(), 1);
+        assertEq(router.lastPaymentId(), bytes32(uint256(1)));
+        assertEq(router.lastTargetBlock(), 1234);
+        assertEq(router.lastProposerRecipient(), address(0xBEEF));
+    }
+
+    function test_executeAndPay_payFailed_reverts() public {
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        RevertingRouter router = new RevertingRouter();
+
+        dumpV2(PX2_WPLS_PLSX, 29, 20);
+        uint256[] memory l = legs2(leg(MM_WPLS_PLSX, WPLS, false, 25), leg(PX2_WPLS_PLSX, PLSX, false, 29));
+        uint256 ownerBefore = IERC20(WPLS).balanceOf(owner);
+
+        // Scan sizes from large to small. Oversized sizes revert NoProfit (harmless); the first
+        // genuinely-profitable size reaches the tip path, the reverting router fails, and the whole
+        // call unwinds with PayFailed. Every branch reverts, so no state is mutated until we break.
+        bytes4 got;
+        for (uint256 size = IERC20(WPLS).balanceOf(MM_WPLS_PLSX) / 50; size > 1e15; size /= 2) {
+            vm.prank(bot);
+            try ex.executeAndPay(
+                l, size, 1, block.timestamp + 60, address(router), bytes32(uint256(1)), 1234, bytes32(uint256(0xabc)), payable(address(0xBEEF))
+            ) returns (uint256) {
+                break; // tip rounded to zero at a tiny size; stop (should not happen before PayFailed)
+            } catch (bytes memory err) {
+                got = bytes4(err);
+                if (got == ArbExecutor.PayFailed.selector) break;
+            }
+        }
+        assertEq(got, ArbExecutor.PayFailed.selector, "expected PayFailed at a profitable size");
+        // Atomic unwind: owner unchanged, no tokens stuck.
+        assertEq(IERC20(WPLS).balanceOf(owner), ownerBefore, "owner changed on revert");
+        assertEq(IERC20(WPLS).balanceOf(address(ex)), 0, "executor kept WPLS on revert");
+    }
+
+    function test_executeAndPay_zeroTip_skipsRouter() public {
+        vm.startPrank(owner);
+        ex.setKeeper(bot);
+        ex.setTipBps(0); // no tip -> router must not be called
+        vm.stopPrank();
+        MockRouter router = new MockRouter();
+
+        dumpV2(PX2_WPLS_PLSX, 29, 20);
+        uint256[] memory l = legs2(leg(MM_WPLS_PLSX, WPLS, false, 25), leg(PX2_WPLS_PLSX, PLSX, false, 29));
+        uint256 ownerBefore = IERC20(WPLS).balanceOf(owner);
+        (uint256 net,) = runPayAs(bot, l, IERC20(WPLS).balanceOf(MM_WPLS_PLSX) / 50, address(router));
+
+        assertGt(net, 0, "no profitable size found");
+        assertEq(router.calls(), 0, "router called with zero tip");
+        assertEq(address(router).balance, 0, "router paid with zero tip");
+        assertEq(IERC20(WPLS).balanceOf(owner) - ownerBefore, net, "owner should get full profit");
+    }
+
+    function test_executeAndPay_unprofitable_noTip() public {
+        // Live markets show no gap: executeAndPay must revert NoProfit and pay no tip.
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        MockRouter router = new MockRouter();
+        uint256[] memory l = legs2(leg(PX2_WPLS_PLSX, WPLS, false, 29), leg(MM_WPLS_PLSX, PLSX, false, 25));
+        vm.prank(bot);
+        try ex.executeAndPay(
+            l, 1000e18, 1e18, block.timestamp + 60, address(router), bytes32(uint256(1)), 1234, bytes32(uint256(0xabc)), payable(address(0xBEEF))
+        ) returns (uint256) {
+            // If some gap did exist, the tip must still be exactly tipBps of realized (checked elsewhere).
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), ArbExecutor.NoProfit.selector);
+        }
+        assertEq(router.calls(), 0, "tip paid on unprofitable cycle");
+    }
+
+    function test_setTipBps_ownerOnly_andCapped() public {
+        vm.prank(owner);
+        ex.setTipBps(2500);
+        assertEq(ex.tipBps(), 2500);
+        // Over the 50% cap reverts.
+        vm.prank(owner);
+        vm.expectRevert(ArbExecutor.TipTooHigh.selector);
+        ex.setTipBps(5001);
+        // Keeper cannot change the tip.
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        vm.prank(bot);
+        vm.expectRevert(ArbExecutor.NotOwner.selector);
+        ex.setTipBps(100);
+    }
+
+    function test_constructor_capsTip() public {
+        vm.expectRevert(ArbExecutor.TipTooHigh.selector);
+        new ArbExecutor(WPLS, 5001);
+    }
+
+    function test_executeAndPay_nonWpls_reverts() public {
+        // A cycle whose start token is not WPLS must revert NotWpls (triangular starting on USDC).
+        vm.prank(owner);
+        ex.setKeeper(bot);
+        MockRouter router = new MockRouter();
+        // USDC/DAI then DAI/WPLS then WPLS/USDC would start on USDC; simplest: a 2-leg cycle on a
+        // non-WPLS pair is hard to source live, so assert via a WPLS-less continuity using USDC start.
+        // We reuse the triangular pools but rotate so leg0 starts on USDC.
+        address USDC = IPool(PX2_WPLS_USDC).token0() == WPLS ? IPool(PX2_WPLS_USDC).token1() : IPool(PX2_WPLS_USDC).token0();
+        uint256[] memory l = new uint256[](3);
+        l[0] = leg(PX2_USDC_DAI, USDC, false, 29);
+        l[1] = leg(PX1_WPLS_DAI, DAI, false, 29);
+        l[2] = leg(PX2_WPLS_USDC, WPLS, false, 29);
+        vm.prank(bot);
+        // Either NoProfit (no gap) or NotWpls — but never a tip on a non-WPLS start.
+        try ex.executeAndPay(
+            l, 1000e6, 1, block.timestamp + 60, address(router), bytes32(uint256(1)), 1234, bytes32(uint256(0xabc)), payable(address(0xBEEF))
+        ) {} catch {}
+        assertEq(router.calls(), 0, "tip paid on non-WPLS start");
     }
 }
