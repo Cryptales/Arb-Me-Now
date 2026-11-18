@@ -148,7 +148,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
-const KEEPER_VERSION = 'v5.5.0';
+const KEEPER_VERSION = 'v5.6.0';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -228,6 +228,13 @@ async function main() {
   //                     later cycles too). Default 3.
   const bundleTipBps    = num(CFG.bundle_tip_bps ?? 1000, 'bundle_tip_bps', { min: 0, max: 5000 });
   const bundleBlocks    = num(CFG.bundle_blocks ?? 3, 'bundle_blocks', { min: 1, max: 10 });
+  // v5.6.0 resilient fire path: on a TRANSIENT bundle-relay failure (HTTP 5xx/429/network/
+  //   timeout) retry the bundle pre-flight+submit this many extra times (total attempts =
+  //   bundle_max_retries + 1), with a short linear backoff. If the bundle path STILL fails,
+  //   the keeper falls back to PRIVATE submission (never the public mempool) so a detected arb
+  //   is not dropped on a momentary relay outage. Defaults apply when the keys are absent.
+  const bundleMaxRetries    = num(CFG.bundle_max_retries ?? 2, 'bundle_max_retries', { min: 0, max: 5 });
+  const bundleRetryBackoffMs = num(CFG.bundle_retry_backoff_ms ?? 300, 'bundle_retry_backoff_ms', { min: 0, max: 5000 });
   // The deadline baked into the execute()/executeAndPay() calldata depends on the active mode.
   const effectiveDeadlineS = (submissionMode === 'public') ? txDeadlineS : privateTxDeadlineS;
 
@@ -462,6 +469,17 @@ async function main() {
     }
     if (accepted === 0) throw new Error('eth_sendBundle: no target block accepted' + (lastErr ? ' (' + lastErr + ')' : ''));
     return { txHash, accepted };
+  }
+
+  // v5.6.0: is an error a TRANSIENT relay/network failure worth retrying? (HTTP 5xx, 429,
+  // network resets, aborted fetch/timeout). A non-transient error (e.g. a bundle rejection
+  // with accepted===0, or a revert) is NOT retried blindly — but still triggers the fallback.
+  function isTransientErr(msg) {
+    const m = String(msg || '').toLowerCase();
+    return /http 5\d\d/.test(m) || m.includes('http 429')
+      || m.includes('etimedout') || m.includes('econnreset') || m.includes('econnrefused')
+      || m.includes('fetch failed') || m.includes('network') || m.includes('timeout')
+      || m.includes('aborted') || m.includes('socket');
   }
 
   // ─── Live signer setup + on-chain keeper() verification (v5.2.0) ────────────
@@ -938,25 +956,67 @@ async function main() {
 
     // ── Submission: public mempool / private RPC use execute(); bundle uses executeAndPay() ──
     let txHash, modeLabel, bundleAccepted = null;
+    let sentMode = effectiveMode;   // v5.6.0: the mode actually used (may flip to 'private' on bundle fallback)
+    let fallbackNote = null;        // v5.6.0: set when the bundle relay failed and we fell back to private
     if (effectiveMode === 'bundle') {
       // v5.5.0: build the executeAndPay() variant that pays BlockFerret's SearcherPaymentRouter a
       // tip out of realized profit (on-chain, AFTER the minProfit guard). Router + per-block context
       // are fetched LIVE (dynamic — never hardcoded). Then submit as an atomic bundle for N blocks.
-      const ctx = await getBuilderContext();          // { targetBlock, parentHash, validatorRecipient }
-      const router = await getSearcherTerms();         // live SearcherPaymentRouter address
+      // v5.6.0: wrap the whole pre-flight + submit in a bounded retry loop (bundleMaxRetries + 1 total
+      // attempts, short linear backoff) so a momentary BlockFerret outage (HTTP 5xx/429/timeout) no
+      // longer drops a detected arb. If it still fails, fall back to PRIVATE submission — NEVER the
+      // public mempool — so MEV/front-run protection is preserved.
       const packed = legsOf(r).map(E.packLeg);
-      // paymentId: nonzero, unique per fire (keccak of signer:targetBlock:nonce).
-      const pidSeed = `arb-me-now:${sk.address}:${ctx.targetBlock}:${nonce}`;
-      const paymentId = '0x' + Buffer.from(signer.keccak(Buffer.from(pidSeed, 'utf8'))).toString('hex');
-      const sendCalldata = encodeExecuteAndPay(
-        packed, built.amountIn, built.minProfit, built.deadline,
-        router, paymentId, ctx.targetBlock, ctx.parentHash, ctx.validatorRecipient);
-      const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: sendCalldata, chainId: CHAIN_ID });
-      const res = await submitBundle(rawTx, ctx.targetBlock, bundleBlocks);
-      txHash = res.txHash;
-      bundleAccepted = res.accepted;
-      modeLabel = `bundle (${bundleRpcUrl})`;
-      console.log(`           → BUNDLED ${txHash} via ${modeLabel} — tip ${bundleTipBps}bps (on-chain), target blocks ${ctx.targetBlock}..${ctx.targetBlock + BigInt(bundleBlocks - 1)} (${bundleAccepted}/${bundleBlocks} accepted, router ${router})`);
+      let bundleErr = null;
+      for (let attempt = 1; attempt <= bundleMaxRetries + 1; attempt++) {
+        try {
+          const ctx = await getBuilderContext();         // { targetBlock, parentHash, validatorRecipient }
+          const router = await getSearcherTerms();        // live SearcherPaymentRouter address
+          // paymentId: nonzero, unique per fire (keccak of signer:targetBlock:nonce).
+          const pidSeed = `arb-me-now:${sk.address}:${ctx.targetBlock}:${nonce}`;
+          const paymentId = '0x' + Buffer.from(signer.keccak(Buffer.from(pidSeed, 'utf8'))).toString('hex');
+          const sendCalldata = encodeExecuteAndPay(
+            packed, built.amountIn, built.minProfit, built.deadline,
+            router, paymentId, ctx.targetBlock, ctx.parentHash, ctx.validatorRecipient);
+          const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: sendCalldata, chainId: CHAIN_ID });
+          const res = await submitBundle(rawTx, ctx.targetBlock, bundleBlocks);
+          txHash = res.txHash;
+          bundleAccepted = res.accepted;
+          modeLabel = `bundle (${bundleRpcUrl})`;
+          console.log(`           → BUNDLED ${txHash} via ${modeLabel} — tip ${bundleTipBps}bps (on-chain), target blocks ${ctx.targetBlock}..${ctx.targetBlock + BigInt(bundleBlocks - 1)} (${bundleAccepted}/${bundleBlocks} accepted, router ${router})`);
+          bundleErr = null;
+          break;
+        } catch (e) {
+          bundleErr = e;
+          if (isTransientErr(e.message) && attempt <= bundleMaxRetries) {
+            const backoff = bundleRetryBackoffMs * attempt;   // linear: 300ms, 600ms, ...
+            console.warn(`           → bundle attempt ${attempt}/${bundleMaxRetries + 1} failed (${e.message}); retrying in ${backoff}ms`);
+            await sleep(backoff);
+            continue;
+          }
+          break;   // non-transient, or out of retries → drop out to the fallback
+        }
+      }
+      // v5.6.0: bundle still failed after all attempts → fall back to PRIVATE submission using the
+      // regular execute() calldata (private RPC only, never the public mempool). submitBundle only
+      // throws when accepted===0 (bundle txs were relay-rejected, never broadcast), so reusing the
+      // same nonce for the fallback tx is safe — the bundle attempt can never mine.
+      if (bundleErr) {
+        console.warn(`           → bundle relay unavailable after ${bundleMaxRetries + 1} attempt(s) (${bundleErr.message}); falling back to PRIVATE submission (out of public mempool)`);
+        const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: built.calldata, chainId: CHAIN_ID });
+        const j = await postJsonRpc(privateRpcUrl, 'eth_sendRawTransaction', [rawTx]);
+        if (j.error) {
+          // Both the bundle relay AND the private fallback failed → let it throw, so the sendLive
+          // caller's try/catch logs the existing `send_error:` row (arb dropped, nothing broadcast).
+          throw new Error(`bundle failed (${bundleErr.message}) AND private fallback failed: ` + (j.error.message || JSON.stringify(j.error)));
+        }
+        txHash = j.result;
+        sentMode = 'private';
+        fallbackNote = 'bundle_failed_fallback_private:' + bundleErr.message;
+        modeLabel = `private-fallback (${privateRpcUrl})`;
+        console.log(`           → FALLBACK SENT ${txHash} via ${modeLabel} (nonce ${nonce}, gas ${gasLimit}, bid ${bidGwei} gwei) — bundle relay was down (${bundleErr.message})`);
+        await notify(`⚠️ <b>Bundle relay down — fell back to PRIVATE submission</b>\n${bundleErr.message}\n${routeStr(r)}\n🔒 out of public mempool (MEV/front-run protection preserved)\n<code>${txHash}</code>`);
+      }
     } else {
       // v5.4.0: public mempool / private RPC — execute() calldata, routed by submission mode.
       const rawTx = sk.signLegacyTx({ nonce, gasPrice, gasLimit, to: executor, value: 0n, data: built.calldata, chainId: CHAIN_ID });
@@ -965,21 +1025,23 @@ async function main() {
       console.log(`           → SENT ${txHash} via ${modeLabel} (nonce ${nonce}, gas ${gasLimit}, bid ${bidGwei} gwei = ${gasPriorityMult}× base)`);
     }
     daily.trades++;
-    const protLine = effectiveMode === 'bundle'
+    // v5.6.0: use sentMode (the mode actually used) so a bundle→private fallback reports honestly.
+    const protLine = sentMode === 'bundle'
       ? `\n📦 bundled (eth_sendBundle, tip ${bundleTipBps}bps, ${bundleAccepted}/${bundleBlocks} blocks) — out of public mempool`
-      : (effectiveMode !== 'public' ? '\n🔒 out of public mempool' : '');
-    await notify(`🚀 <b>Keeper SENT (live, ${effectiveMode})</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)} | bid ${bidGwei} gwei (${gasPriorityMult}×)${protLine}\n<code>${txHash}</code>`);
+      : (sentMode !== 'public' ? '\n🔒 out of public mempool' : '');
+    await notify(`🚀 <b>Keeper SENT (live, ${sentMode})</b>\n${routeStr(r)}\n${venuesStr(r)}\nsim net ${fmtUsd(simNetUsd)} | bid ${bidGwei} gwei (${gasPriorityMult}×)${protLine}\n<code>${txHash}</code>`);
 
     // ── Resolve the receipt, THEN write the row (col19/col20 always populated). ──
     // deadline (unix s) is carried so a non-included private/bundle tx can be marked
     // EXPIRED harmlessly once its on-chain deadline has passed with no receipt.
-    const ctx = { txHash, route: routeStr(r), venues: venuesStr(r), simNetUsd, gasUsdEst: c.gasUsd, wplsPrice, usdS: c.usdS, mode: effectiveMode, deadline: built.deadline };
+    // fallbackNote (v5.6.0) is carried so the outcome row records a bundle→private fallback.
+    const ctx = { txHash, route: routeStr(r), venues: venuesStr(r), simNetUsd, gasUsdEst: c.gasUsd, wplsPrice, usdS: c.usdS, mode: sentMode, fallbackNote, deadline: built.deadline };
     const receipt = await waitReceipt(txHash, receiptWaitS * 1000);
     if (!receipt) {
       console.warn(`           → receipt not seen within ${receiptWaitS}s; logging pending + re-checking on later cycles`);
-      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, 'pending', `receipt_timeout;${effectiveMode}`]);
+      logRow(['ok', simNetUsd.toFixed(4), 'live', txHash, 'pending', `${fallbackNote ? fallbackNote + ';' : ''}receipt_timeout;${sentMode}`]);
       pendingTxs.push({ ...ctx, ts: Date.now() });
-      await notify(`⌛ <b>Keeper tx pending</b> (no receipt in ${receiptWaitS}s via ${effectiveMode}; re-checking)\n<code>${txHash}</code>`);
+      await notify(`⌛ <b>Keeper tx pending</b> (no receipt in ${receiptWaitS}s via ${sentMode}; re-checking)\n<code>${txHash}</code>`);
       return;
     }
     await resolveReceipt(receipt, ctx);
@@ -1004,6 +1066,9 @@ async function main() {
     const ok = BigInt(receipt.status) === 1n;
     const gasUsd = gasCostUsdFromReceipt(receipt, wplsPrice, gasUsdEst);
     const kc = signer && signer.keccak;
+    // v5.6.0: prefix the outcome err column with the fallback note when this fire fell back to
+    // private submission, so the CSV records e.g. `bundle_failed_fallback_private:HTTP 503;success`.
+    const note = ctx.fallbackNote ? ctx.fallbackNote + ';' : '';
 
     if (ok) {
       consecutiveReverts = 0;   // a win clears the losing streak
@@ -1012,7 +1077,7 @@ async function main() {
       const realizedNet = realizedGross != null ? realizedGross - gasUsd : null;
       if (realizedNet != null && realizedNet < 0) daily.lossUsd += -realizedNet;  // a trade that realized below its gas cost
       console.log(`           → SUCCESS ${txHash} realized net ${fmtUsd(realizedNet)} (gross ${fmtUsd(realizedGross)} − gas ${fmtUsd(gasUsd)})`);
-      logRow(['ok', simNetStr, 'live', txHash, realizedNet != null ? realizedNet.toFixed(4) : '', 'success']);
+      logRow(['ok', simNetStr, 'live', txHash, realizedNet != null ? realizedNet.toFixed(4) : '', note + 'success']);
       await notify(`✅ <b>Keeper SUCCESS</b>\n${route}\nrealized net ${fmtUsd(realizedNet)} (gross ${fmtUsd(realizedGross)} − gas ${fmtUsd(gasUsd)})\n<code>${txHash}</code>`);
       return;
     }
@@ -1022,7 +1087,7 @@ async function main() {
     daily.lossUsd += gasUsd;
     consecutiveReverts++;
     console.log(`           → REVERTED on-chain ${txHash} (edge closed; lost ~${fmtUsd(gasUsd)} gas) [consec ${consecutiveReverts}/${consecRevertLimit || '∞'}]`);
-    logRow(['ok', simNetStr, 'live', txHash, (-gasUsd).toFixed(4), `reverted_onchain;consec=${consecutiveReverts}`]);
+    logRow(['ok', simNetStr, 'live', txHash, (-gasUsd).toFixed(4), note + `reverted_onchain;consec=${consecutiveReverts}`]);
     let tg = `❌ <b>Keeper tx REVERTED</b> (edge closed; only gas lost ~${fmtUsd(gasUsd)})\nconsecutive reverts ${consecutiveReverts}/${consecRevertLimit || '∞'}\n<code>${txHash}</code>`;
     if (consecRevertLimit > 0 && consecutiveReverts >= consecRevertLimit && !liveSuspended) {
       liveSuspended = true;   // trip the breaker → checkGuards pauses all further live sends
@@ -1053,13 +1118,13 @@ async function main() {
         await resolveReceipt(receipt, p);
       } else if (privateMode && deadlinePassed) {
         console.warn(`[${nowIso()}] private/${p.mode} tx ${p.txHash} expired (deadline passed, never included) — harmless, no gas/capital lost`);
-        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'expired', `expired_not_included;${p.mode}`]);
+        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'expired', `${p.fallbackNote ? p.fallbackNote + ';' : ''}expired_not_included;${p.mode}`]);
         await notify(`⏱ <b>Keeper tx EXPIRED</b> (not included before deadline via ${p.mode}; no gas/capital lost)\n<code>${p.txHash}</code>`);
       } else if (Date.now() - p.ts < 10 * 60 * 1000) {
         keep.push(p);
       } else {
         console.warn(`[${nowIso()}] giving up on pending tx ${p.txHash} after 10 min (still no receipt)`);
-        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'pending', `receipt_timeout_final${p.mode ? ';' + p.mode : ''}`]);
+        logRow(['ok', p.simNetUsd != null ? Number(p.simNetUsd).toFixed(4) : '', 'live', p.txHash, 'pending', `${p.fallbackNote ? p.fallbackNote + ';' : ''}receipt_timeout_final${p.mode ? ';' + p.mode : ''}`]);
       }
     }
     pendingTxs.length = 0;
