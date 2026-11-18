@@ -105,6 +105,13 @@ const path = require('path');
 const fs   = require('fs');
 const crypto = require('crypto');
 
+// v5.7.0 chain-adapter refactor: chain-level parameters (chainId, default public/private/
+// bundle RPC endpoints, submission-mode default) now come from the active per-chain adapter
+// (chains/) instead of being hardcoded here. It defaults to PulseChain, so with no config the
+// values are byte-for-byte identical to before. Operator config (executor_address, tips,
+// deadlines, retries, live_enabled) still comes from config.json exactly as today.
+const CHAIN = require(path.join(__dirname, '..', 'chains')).active();
+
 // ─── CLI flags ──────────────────────────────────────────────────────────────
 const ARGV     = process.argv.slice(2);
 const SELFTEST = ARGV.includes('--selftest');
@@ -117,7 +124,7 @@ const DRY_FLAG = ARGV.includes('--dry');
 // KEEPER_PRIVATE_KEY whose derived address matches the on-chain keeper().
 const LIVE_FLAG = ARGV.includes('--live') && !DRY_FLAG;
 
-const CHAIN_ID = 369;                                   // PulseChain mainnet
+const CHAIN_ID = CHAIN.chainId;                         // PulseChain mainnet (369) — from active adapter
 const DEFAULT_EXECUTOR = '0xd5da79af4c4c24f9d3afec0a1cbd761a24b130bd'; // deployed ArbExecutor (public contract addr)
 const KEEPER_SELECTOR  = '0xaced1661';                  // keeper() view selector on the executor
 
@@ -148,7 +155,7 @@ function num(v, name, { min = -Infinity, max = Infinity, allowNull = false } = {
 function fail(msg) { console.error('✗ ' + msg); process.exit(1); }
 const nowIso = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 const sleep  = ms => new Promise(r => setTimeout(r, ms));
-const KEEPER_VERSION = 'v5.6.0';
+const KEEPER_VERSION = 'v5.7.0';
 
 // ════════════════════════════════════════════════════════════════════════════
 // MAIN
@@ -157,7 +164,7 @@ async function main() {
   const CFG = loadConfig();
 
   // Shared scanner fields.
-  const rpcUrls      = Array.isArray(CFG.rpc_urls) && CFG.rpc_urls.length ? CFG.rpc_urls : ['https://rpc.pulsechain.com'];
+  const rpcUrls      = Array.isArray(CFG.rpc_urls) && CFG.rpc_urls.length ? CFG.rpc_urls : CHAIN.submission.publicRpcDefault;
   const startToken   = CFG.start_token || 'WPLS';
   const amountInHuman = CFG.amount_in != null ? String(CFG.amount_in) : '1000';
   const v3Depth      = Math.max(1, Math.min(8, num(CFG.v3_depth ?? 4, 'v3_depth', { min: 1, max: 8 })));
@@ -210,13 +217,13 @@ async function main() {
   //                           non-included tx EXPIRES HARMLESSLY instead of landing stale (private inclusion
   //                           is NOT every-block). Public mode keeps using tx_deadline_s.
   const SUB_MODES = ['public', 'private', 'bundle'];
-  let submissionMode    = String(CFG.submission_mode || 'private').toLowerCase();
+  let submissionMode    = String(CFG.submission_mode || CHAIN.submission.defaultMode).toLowerCase();
   if (!SUB_MODES.includes(submissionMode)) {
-    console.warn(`⚠ unknown submission_mode "${CFG.submission_mode}" — defaulting to "private".`);
-    submissionMode = 'private';
+    console.warn(`⚠ unknown submission_mode "${CFG.submission_mode}" — defaulting to "${CHAIN.submission.defaultMode}".`);
+    submissionMode = CHAIN.submission.defaultMode;
   }
-  const privateRpcUrl   = CFG.private_rpc_url || 'https://rpc.blockferret.win';
-  const bundleRpcUrl    = CFG.bundle_rpc_url  || 'https://rpc.blockferret.win/builders';
+  const privateRpcUrl   = CFG.private_rpc_url || CHAIN.submission.privateRpc;
+  const bundleRpcUrl    = CFG.bundle_rpc_url  || CHAIN.submission.bundleRpc;
   const privateTxDeadlineS = num(CFG.private_tx_deadline_s ?? 30, 'private_tx_deadline_s', { min: 5, max: 1800 });
   // v5.5.0 bundle-mode knobs:
   //   bundle_tip_bps  — the builder tip as a fraction of realized profit, in basis points. This is
